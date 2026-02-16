@@ -19,24 +19,24 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
 
 ### 0.1 Project Scaffold
 
-- [ ] **T-001** Create directory structure and empty `__init__.py` files
+- [x] **T-001** Create directory structure and empty `__init__.py` files
   - File: all directories from `tech_stack.md` Section 2
   - Verify: `find backend -name __init__.py | wc -l` returns 6 (core, agents, sandbox, bus, api, backend)
   - Depends: —
 
-- [ ] **T-002** Create `backend/config.py` with Pydantic Settings
+- [x] **T-002** Create `backend/config.py` with Pydantic Settings
   - File: `backend/config.py`
   - Content: `Settings` class from `tech_stack.md` Section 8 (all env vars with defaults)
   - Verify: `python -c "from backend.config import Settings; s = Settings(); print(s.tick_rate_ms)"` prints `16`
   - Depends: T-001
 
-- [ ] **T-003** Create `backend/requirements.txt` with pinned dependencies
+- [x] **T-003** Create `backend/requirements.txt` with pinned dependencies
   - File: `backend/requirements.txt`
   - Content: fastapi, uvicorn, redis, httpx, pydantic, pydantic-settings, structlog, watchdog, pytest, pytest-asyncio, mypy
   - Verify: `pip install -r backend/requirements.txt` succeeds
   - Depends: T-001
 
-- [ ] **T-004** Create `.env.example` and `.gitignore`
+- [x] **T-004** Create `.env.example` and `.gitignore`
   - File: `.env.example`, `.gitignore`
   - `.gitignore`: mutations/*.py (except __init__.py), .env, __pycache__, .mypy_cache, node_modules, dist
   - Verify: files exist, `git status` doesn't show .env
@@ -44,13 +44,13 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
 
 ### 0.2 Docker & Ollama
 
-- [ ] **T-005** Create `Dockerfile.core` for Python backend
+- [x] **T-005** Create `Dockerfile.core` for Python backend
   - File: `Dockerfile.core`
   - Content: python:3.11-slim, WORKDIR /app, copy requirements, pip install, copy backend/, CMD uvicorn
   - Verify: `docker build -f Dockerfile.core -t genesis-core .` succeeds
   - Depends: T-003
 
-- [ ] **T-006** Create `docker-compose.yml` with 3 services: core, redis, ollama
+- [x] **T-006** Create `docker-compose.yml` with 3 services: core, redis, ollama
   - File: `docker-compose.yml`
   - Services: core (port 8000), redis:7-alpine (port 6379), ollama/ollama (port 11434)
   - Volumes: `./mutations:/app/mutations`, `redis_data`, `ollama_models`
@@ -58,7 +58,7 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
   - Verify: `docker compose config` validates without errors
   - Depends: T-005
 
-- [ ] **T-007** Add Ollama model pull script / healthcheck with startup wait
+- [x] **T-007** Add Ollama model pull script / healthcheck with startup wait
   - File: `scripts/setup_ollama.sh`, `docker-compose.yml` (extend healthcheck)
   - Content:
     - Script: `ollama pull llama3:8b` (WARNING: 4-5GB download, may take 10-20 min on slow internet)
@@ -68,20 +68,20 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
   - Verify: script runs, `curl http://localhost:11434/api/tags` returns JSON with llama3, core waits for ollama to be healthy before starting
   - Depends: T-006
 
-- [ ] **T-008** Verify full Docker stack starts and services communicate
+- [x] **T-008** Verify full Docker stack starts and services communicate
   - Action: `docker compose up -d`, verify redis-cli ping, curl ollama, curl core
   - Verify: all 3 containers healthy, `docker compose ps` shows all "Up"
   - Depends: T-006, T-007
 
 ### 0.3 Redis Connection
 
-- [ ] **T-009** Create Redis connection helper with async client
+- [x] **T-009** Create Redis connection helper with async client
   - File: `backend/bus/__init__.py` (re-exports), internal helper in bus module
   - Content: `async def get_redis() -> Redis` factory, using `redis.asyncio.Redis.from_url(settings.redis_url)`
   - Verify: `pytest tests/bus/test_redis_connection.py` — connects, SET/GET works
   - Depends: T-002, T-003
 
-- [ ] **T-010** Create initial `mutations/` directory with `__init__.py` and `.gitkeep`
+- [x] **T-010** Create initial `mutations/` directory with `__init__.py` and `.gitkeep`
   - File: `mutations/__init__.py`, `mutations/.gitkeep`
   - Verify: directory exists, is importable as Python package
   - Depends: T-001
@@ -94,20 +94,20 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
 
 ### 1.1 Data Models
 
-- [ ] **T-011** Create `BaseTrait` abstract class and `TraitExecutor`
+- [x] **T-011** Create `BaseTrait` abstract class and `TraitExecutor`
   - File: `backend/core/traits.py`
   - Content: `class BaseTrait(Protocol)` with `async def execute(self, entity) -> None`, `TraitExecutor` with timeout wrapper (5ms hard limit, 2ms soft target), tick time budgeting (14ms total for all entities)
   - Verify: mypy passes, `TraitExecutor.execute_traits()` catches timeout, skips remaining entities if tick budget exceeded
   - Depends: T-001
 
-- [ ] **T-012** Create `BaseEntity` dataclass with fields and `update()` method
+- [x] **T-012** Create `BaseEntity` dataclass with fields and `update()` method
   - File: `backend/core/entity.py`
   - Fields: id, x, y, energy, max_energy, age, generation, dna_hash, traits, state, parent_id, born_at_tick, color, radius, metabolism_rate, deactivated_traits
   - Methods: `update()` calls TraitExecutor, `move(dx, dy)`, `consume_resource(r)`
   - Verify: `Entity` can be instantiated, `update()` iterates traits
   - Depends: T-011
 
-- [ ] **T-013** Create `DynamicRegistry` — in-memory Trait catalog with race condition protection
+- [x] **T-013** Create `DynamicRegistry` — in-memory Trait catalog with race condition protection
   - File: `backend/core/dynamic_registry.py`
   - Methods: `register(name, cls)`, `unregister(name)`, `get_all_traits()`, `get_trait(name)`, `get_snapshot() -> dict` (returns immutable copy for spawn), `unique_trait_count()`, `most_common_trait()`
   - Implementation: Use atomic dict replacement (create new dict, assign) instead of mutation. `get_snapshot()` returns `self._traits.copy()` to prevent race conditions during hot-reload.
@@ -116,14 +116,14 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
 
 ### 1.2 Entity Manager
 
-- [ ] **T-014** Create `EntityManager` — CRUD, spawn, remove
+- [x] **T-014** Create `EntityManager` — CRUD, spawn, remove
   - File: `backend/core/entity_manager.py`
   - Methods: `spawn(parent)`, `remove(entity)`, `alive()`, `count()`, `get(id)`
   - Internal: `dict[str, Entity]` for O(1) lookups
   - Verify: spawn 10 entities, remove 3, count() == 7
   - Depends: T-012
 
-- [ ] **T-015** Add spatial hash grid to `EntityManager` for collision detection
+- [x] **T-015** Add spatial hash grid to `EntityManager` for collision detection
   - File: `backend/core/entity_manager.py` (extend)
   - Methods: `detect_collisions() -> list[tuple[Entity, Entity]]`, `nearby_entities(x, y, radius) -> list[Entity]`
   - Internal: grid cells of 50x50px, rebuild each tick

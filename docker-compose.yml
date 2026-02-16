@@ -1,0 +1,115 @@
+# AI-Genesis Docker Compose Configuration
+# Orchestrates core, redis, and ollama services
+
+services:
+  # ============================================
+  # CORE ENGINE (Python Backend)
+  # ============================================
+  core:
+    build:
+      context: .
+      dockerfile: Dockerfile.core
+    container_name: genesis-core
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount mutations directory for hot-reload of LLM-generated code
+      - ./mutations:/app/mutations
+      # Mount backend code for --reload to work in dev mode
+      - ./backend:/app/backend
+      # Mount tests directory for running unit tests
+      - ./tests:/app/tests
+    environment:
+      - GENESIS_REDIS_URL=redis://redis:6379/0
+      - GENESIS_OLLAMA_URL=http://ollama:11434
+      - GENESIS_POSTGRES_DSN=postgresql+asyncpg://genesis:genesis@postgres:5432/genesis
+    depends_on:
+      redis:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    restart: unless-stopped
+    networks:
+      - genesis-network
+
+  # ============================================
+  # REDIS (State Storage + Pub/Sub)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: genesis-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - genesis-network
+
+  # ============================================
+  # OLLAMA (LLM Service)
+  # ============================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: genesis-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 16G
+        reservations:
+          cpus: '2'
+          memory: 8G
+    healthcheck:
+      # CRITICAL: Check that model is loaded, not just server running
+      # This prevents core from starting before llama3:8b is downloaded
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30  # Allow 5 minutes for model download (30 * 10s)
+      start_period: 60s  # Give Ollama 60s to start before first check
+    restart: unless-stopped
+    networks:
+      - genesis-network
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  redis_data:
+    driver: local
+  ollama_models:
+    driver: local
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  genesis-network:
+    driver: bridge
