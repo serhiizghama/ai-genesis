@@ -16,9 +16,11 @@ from typing import Optional
 import structlog
 import uvicorn
 
+from backend.agents.watcher import WatcherAgent
 from backend.api.app import create_app
 from backend.api.ws_handler import ConnectionManager
 from backend.bus import get_redis
+from backend.bus.event_bus import EventBus
 from backend.config import Settings
 from backend.core.dynamic_registry import DynamicRegistry
 from backend.core.engine import CoreEngine
@@ -48,6 +50,7 @@ class SimulationRunner:
     def __init__(self) -> None:
         """Initialize the runner."""
         self.engine: Optional[CoreEngine] = None
+        self.watcher: Optional[WatcherAgent] = None
         self.uvicorn_server: Optional[uvicorn.Server] = None
         self.shutdown_event = asyncio.Event()
 
@@ -87,6 +90,10 @@ class SimulationRunner:
             # For MVP, we can run without Redis
             # Event bus will be needed in Phase 2
             redis = None  # type: ignore
+
+        # Initialize EventBus (T-039)
+        event_bus = EventBus(redis)  # type: ignore
+        logger.info("event_bus_initialized")
 
         # Initialize core components
         entity_manager = EntityManager(
@@ -130,6 +137,14 @@ class SimulationRunner:
         )
         logger.info("core_engine_initialized")
 
+        # Create Watcher Agent (T-041)
+        self.watcher = WatcherAgent(
+            redis=redis,  # type: ignore
+            event_bus=event_bus,
+            settings=settings,
+        )
+        logger.info("watcher_agent_initialized")
+
         # Create FastAPI app (T-023 integration)
         app = create_app(
             engine=self.engine,
@@ -158,16 +173,19 @@ class SimulationRunner:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
 
-        # Start both the simulation engine and the API server
-        logger.info("starting_engine_and_api_server")
+        # Start all services: engine, watcher, event bus, and API server
+        logger.info("starting_all_services")
 
-        # Run engine and uvicorn in parallel using asyncio.gather
+        # Run engine, watcher, event bus listener, and uvicorn in parallel
         engine_task = asyncio.create_task(self.engine.run())
+        watcher_task = asyncio.create_task(self.watcher.run())
+        event_bus_task = asyncio.create_task(event_bus.listen())
         server_task = asyncio.create_task(self.uvicorn_server.serve())
 
         logger.info(
             "services_running",
             simulation="running",
+            watcher="running",
             api_server="http://0.0.0.0:8000",
             docs="http://0.0.0.0:8000/docs",
         )
@@ -182,22 +200,37 @@ class SimulationRunner:
         if self.engine:
             self.engine.stop()
 
+        # Stop the watcher agent
+        if self.watcher:
+            self.watcher.stop()
+
         # Stop the uvicorn server
         if self.uvicorn_server:
             self.uvicorn_server.should_exit = True
 
-        # Wait for both tasks to finish (give them 5 seconds)
+        # Close event bus
+        await event_bus.close()
+
+        # Wait for all tasks to finish (give them 5 seconds)
         try:
             await asyncio.wait_for(
-                asyncio.gather(engine_task, server_task, return_exceptions=True),
+                asyncio.gather(
+                    engine_task,
+                    watcher_task,
+                    event_bus_task,
+                    server_task,
+                    return_exceptions=True,
+                ),
                 timeout=5.0,
             )
         except asyncio.TimeoutError:
             logger.warning("shutdown_timeout")
             engine_task.cancel()
+            watcher_task.cancel()
+            event_bus_task.cancel()
             server_task.cancel()
 
-        logger.info("simulation_and_api_stopped")
+        logger.info("all_services_stopped")
 
 
 async def main() -> None:

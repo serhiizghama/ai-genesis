@@ -14,10 +14,13 @@ from typing import Optional, TYPE_CHECKING
 import structlog
 from redis.asyncio import Redis
 
+from backend.bus.channels import Channels
+from backend.bus.events import TelemetryEvent
 from backend.config import Settings
 from backend.core.dynamic_registry import DynamicRegistry
 from backend.core.entity_manager import EntityManager
 from backend.core.environment import Environment
+from backend.core.telemetry import WorldSnapshot, collect_snapshot, save_snapshot_to_redis
 from backend.core.traits import TraitExecutor
 from backend.core.world_physics import WorldPhysics
 
@@ -79,6 +82,10 @@ class CoreEngine:
         self.stats_interval = 100  # Log stats every 100 ticks
         self.running = False
 
+        # Death statistics (reset after each snapshot)
+        self.death_stats: dict[str, int] = {}
+        self.last_snapshot_tick = 0
+
     async def run(self) -> None:
         """Main simulation loop.
 
@@ -118,6 +125,10 @@ class CoreEngine:
                 # T-020: Statistics and logging
                 if self.tick_counter % self.stats_interval == 0:
                     self._log_statistics()
+
+                # T-036/T-037: Telemetry snapshot collection
+                if self.tick_counter % self.settings.snapshot_interval_ticks == 0:
+                    await self._collect_and_send_telemetry()
 
                 # T-029: Broadcast world state every 2 ticks (30 FPS)
                 if self.ws_manager and self.tick_counter % 2 == 0:
@@ -193,11 +204,17 @@ class CoreEngine:
         """Remove entities that have died (energy <= 0).
 
         Entities with state == "dead" are removed from the simulation.
+        Death causes are tracked in self.death_stats for telemetry.
         """
         entities = self.entity_manager.get_all_entities()
         dead_entities = [e for e in entities if not e.is_alive()]
 
         for entity in dead_entities:
+            # Track death cause (in MVP, always starvation when energy <= 0)
+            death_cause = "starvation"
+            self.death_stats[death_cause] = self.death_stats.get(death_cause, 0) + 1
+
+            # Remove from simulation
             self.entity_manager.remove(entity)
 
         if dead_entities:
@@ -298,16 +315,58 @@ class CoreEngine:
             resources=resource_count,
         )
 
-        # TODO: Send telemetry to event bus for Watcher agent
-        # await self.redis.publish(
-        #     Channels.TELEMETRY,
-        #     TelemetryEvent(
-        #         tick=self.tick_counter,
-        #         entity_count=entity_count,
-        #         avg_energy=avg_energy,
-        #         resource_count=resource_count,
-        #     )
-        # )
+    async def _collect_and_send_telemetry(self) -> None:
+        """Collect world snapshot and publish telemetry event (T-036, T-037).
+
+        This method:
+        1. Collects a WorldSnapshot with current simulation metrics
+        2. Saves snapshot to Redis with 5-minute TTL
+        3. Publishes TelemetryEvent to the event bus
+        4. Resets death_stats for next period
+        5. Logs telemetry event
+
+        Note:
+            This is called every settings.snapshot_interval_ticks (e.g., 300 ticks).
+            The Watcher Agent subscribes to the TELEMETRY channel and analyzes
+            these snapshots for anomaly detection.
+        """
+        # Collect snapshot from current world state
+        snapshot = collect_snapshot(self)
+
+        # Save snapshot to Redis with 5-minute TTL
+        snapshot_key = await save_snapshot_to_redis(
+            self.redis,
+            snapshot,
+            ttl_seconds=300,
+        )
+
+        # Publish TelemetryEvent to event bus
+        event = TelemetryEvent(
+            tick=snapshot.tick,
+            snapshot_key=snapshot_key,
+        )
+
+        # Serialize and publish event (using same pattern as EventBus.publish)
+        import json
+        from dataclasses import asdict
+
+        payload = json.dumps(asdict(event), default=str)
+        await self.redis.publish(Channels.TELEMETRY, payload)
+
+        # Reset death stats for next snapshot period
+        self.death_stats.clear()
+        self.last_snapshot_tick = self.tick_counter
+
+        # Log telemetry event
+        logger.info(
+            "telemetry_sent",
+            tick=snapshot.tick,
+            snapshot_key=snapshot_key,
+            entity_count=snapshot.entity_count,
+            avg_energy=snapshot.avg_energy,
+            resource_count=snapshot.resource_count,
+            death_stats=snapshot.death_stats,
+        )
 
     async def _spawn_initial_population(self) -> None:
         """Spawn initial population at simulation start."""

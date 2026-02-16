@@ -7,6 +7,9 @@ from typing import Optional
 from redis.asyncio import Redis
 
 from backend.config import Settings
+from backend.bus.channels import Channels
+from backend.bus.event_bus import EventBus
+from backend.bus import events
 
 # Singleton Redis connection instance
 _redis_client: Optional[Redis] = None
@@ -51,4 +54,10 @@ async def close_redis() -> None:
         _redis_client = None
 
 
-__all__ = ["get_redis", "close_redis"]
+__all__ = [
+    "get_redis",
+    "close_redis",
+    "EventBus",
+    "Channels",
+    "events",
+]
