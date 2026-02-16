@@ -1,0 +1,342 @@
+# AI-Genesis — Cursor Rules
+# Instructions for AI agents writing code in this project.
+# Read this file FIRST before making any changes.
+
+## Project Identity
+
+You are working on **AI-Genesis** — an autonomous sandbox where digital entities
+(Molbots) evolve through runtime code self-modification driven by a local LLM.
+
+Key docs (read before starting any task):
+- `docs/PRD.md` — product requirements, user stories, success metrics
+- `docs/tech_stack.md` — architecture, DB schemas, event bus, sandbox system
+- `docs/development_roadmap.md` — implementation phases and contracts
+
+---
+
+## Language & Runtime
+
+- **Python 3.11+** for all backend code.
+- **TypeScript (strict mode)** for all frontend code.
+- **Target:** async-first, functional-leaning, strongly typed.
+
+---
+
+## Strict Typing Rules
+
+### Python
+
+- **NEVER use `Any`.** Every variable, parameter, return type, and field must have
+  an explicit concrete type. If you feel the urge to write `Any`, use a `Protocol`,
+  `TypeVar`, generic, or `Union` instead.
+- All files must pass **`mypy --strict`** without errors.
+- Use `from __future__ import annotations` at the top of every module.
+- Prefer `dataclasses.dataclass` or `pydantic.BaseModel` for data structures.
+  Do not use plain dicts for structured data.
+- Use built-in generics: `list[str]`, `dict[str, int]`, `tuple[int, ...]`.
+  Do not import `List`, `Dict`, `Tuple` from `typing`.
+- Use `Optional[X]` only when `None` is a meaningful value, not as a lazy fallback.
+- Use `Callable[[ArgType], ReturnType]` — never bare `callable`.
+
+```python
+# FORBIDDEN
+def process(data: Any) -> Any: ...
+handlers: dict[str, list[callable]] = {}
+
+# CORRECT
+from __future__ import annotations
+from typing import Protocol
+
+class EventHandler(Protocol):
+    async def __call__(self, data: dict[str, str | int | float]) -> None: ...
+
+def process(data: WorldSnapshot) -> EvolutionTrigger: ...
+handlers: dict[str, list[EventHandler]] = {}
+```
+
+### TypeScript
+
+- Enable `"strict": true` in `tsconfig.json`. No exceptions.
+- **NEVER use `any`.** Use `unknown` and narrow, or define proper interfaces.
+- All component props must have explicit interfaces.
+- Use `as const` for literal objects and enums.
+
+```typescript
+// FORBIDDEN
+const handleData = (data: any) => { ... }
+
+// CORRECT
+interface WorldFrame {
+  readonly tick: number;
+  readonly entities: readonly EntityState[];
+}
+const handleData = (data: WorldFrame): void => { ... }
+```
+
+---
+
+## Code Style: Functional + Async
+
+### Prefer Pure Functions
+
+- Business logic should live in **pure functions** that take inputs and return outputs.
+- Keep side effects (Redis, Ollama, filesystem) at the edges, injected via parameters.
+- Avoid classes with mutable state where a function + dataclass would suffice.
+
+```python
+# PREFERRED: pure function
+def detect_anomaly(
+    current: WorldSnapshot,
+    history: list[WorldSnapshot],
+    threshold: float,
+) -> EvolutionTrigger | None:
+    ...
+
+# AVOID: method with hidden state
+class Watcher:
+    def detect(self) -> EvolutionTrigger | None:
+        # reads self._history, self._threshold internally
+        ...
+```
+
+### Async by Default
+
+- All I/O operations **must** be async: Redis, HTTP (Ollama), file writes, WebSocket.
+- Use `async def` for any function that touches I/O.
+- Never use `time.sleep()`. Use `asyncio.sleep()`.
+- Never use synchronous `redis.Redis()`. Use `redis.asyncio.Redis`.
+- Never call blocking code in the event loop. Use `asyncio.to_thread()` for CPU-bound
+  work (e.g., `ast.parse` on large files).
+
+### Composition over Inheritance
+
+- Prefer protocols and composition. Use `Protocol` for interfaces.
+- The only acceptable inheritance hierarchy is `BaseTrait → specific Trait` (for LLM-generated mutations).
+- Do not create deep class hierarchies.
+
+---
+
+## Architecture Boundaries (CRITICAL)
+
+### The `core/` Directory is PROTECTED
+
+**Do NOT modify any file in `backend/core/` without explicit human confirmation.**
+
+The core contains the simulation engine, entity model, world physics, and the dynamic
+registry. It must remain stable while LLM-generated code mutates around it.
+
+Before touching `core/`:
+1. State exactly which file and function you want to change.
+2. Explain WHY the change is needed.
+3. Wait for human approval.
+
+Files in `core/`:
+- `engine.py` — WorldLoop tick cycle. NEVER modify the tick loop structure.
+- `entity.py` — BaseEntity. NEVER change the `update()` contract.
+- `traits.py` — BaseTrait. NEVER change the `execute(self, entity)` signature.
+- `dynamic_registry.py` — DynamicRegistry. NEVER change the registration interface.
+- `entity_manager.py`, `world_physics.py`, `environment.py` — stable contracts.
+
+### The `mutations/` Directory is the ONLY Place for Generated Code
+
+- All LLM-generated code MUST go into `mutations/`.
+- Never write LLM-generated code into `core/`, `agents/`, `bus/`, `api/`, or `sandbox/`.
+- Mutation files follow strict naming: `trait_{name}_v{version}.py`.
+- Each mutation file must contain exactly ONE class that inherits from `Trait`.
+- Mutations may only import from the allowed whitelist:
+  `math`, `random`, `dataclasses`, `typing`, `enum`, `collections`, `functools`, `itertools`.
+- **CRITICAL: Module-Level Code Protection**
+  - Mutation files must NOT contain any executable code at the module level.
+  - Only class definitions (`class X(Trait): ...`), imports, and constant assignments are allowed.
+  - No `print()`, no function calls, no loops, no database connections outside class methods.
+  - Executing code at import time will BLOCK the Main Loop and freeze the server.
+  - AST validator will reject files with `Expr`, `For`, `While`, or `If` at module level.
+
+### Module Responsibilities
+
+| Directory | Responsibility | May Import From |
+|-----------|---------------|-----------------|
+| `core/` | Simulation engine, entities, physics | `bus/`, `config` |
+| `agents/` | Watcher, Architect, Coder logic | `bus/`, `sandbox/`, `config` |
+| `sandbox/` | Validation, patching, rollback | `core/traits` (types only), `bus/`, `config` |
+| `bus/` | Event bus, event types, channels | `config` |
+| `api/` | FastAPI routes, WebSocket handler | `bus/`, `core/` (read-only), `config` |
+| `mutations/` | LLM-generated Trait code | Whitelist only |
+
+Import direction: `api → core → bus ← agents → sandbox`. No circular imports.
+
+---
+
+## Event-Driven Communication
+
+- Components communicate through the **Redis Pub/Sub event bus** — never by direct import or function call between layers.
+- Every event is a `@dataclass` defined in `bus/events.py`.
+- Channel names are constants in `bus/channels.py`. Never use raw strings.
+- Publishing pattern: `await bus.publish(Channels.TELEMETRY, TelemetryEvent(...))`.
+
+```python
+# CORRECT
+await bus.publish(Channels.MUTATION_READY, MutationReady(
+    mutation_id=mid,
+    plan_id=pid,
+    file_path=str(path),
+    trait_name=name,
+    version=ver,
+    code_hash=sha,
+))
+
+# FORBIDDEN: direct call across layers
+patcher.load_mutation(file_path)  # NO — use the event bus
+```
+
+---
+
+## Error Handling
+
+- **Never let exceptions crash the simulation loop.** The world must keep running.
+- Trait execution errors: catch per-trait, deactivate the trait, log it, keep the entity alive.
+- LLM errors (timeout, bad response): log, skip this evolution cycle, retry on next trigger.
+- Mutation loading errors: rollback to previous version, notify Watcher via event bus.
+- Use structured logging (`structlog` or `logging` with JSON formatter).
+- No bare `except:`. Always catch specific exceptions or at minimum `except Exception`.
+
+```python
+# CORRECT
+try:
+    await asyncio.wait_for(trait.execute(entity), timeout=0.005)  # 5ms hard limit
+except asyncio.TimeoutError:
+    entity.deactivate_trait(trait)
+    logger.warning("trait_timeout", trait=trait.name, entity=entity.id)
+except Exception as exc:
+    entity.deactivate_trait(trait)
+    logger.error("trait_error", trait=trait.name, error=str(exc))
+
+# FORBIDDEN
+try:
+    trait.execute(entity)
+except:
+    pass
+```
+
+---
+
+## Naming Conventions
+
+### Python
+
+- Files: `snake_case.py`
+- Classes: `PascalCase` — `BaseEntity`, `WatcherAgent`, `ThermalVision`
+- Functions: `snake_case` — `detect_anomaly`, `validate_source_code`
+- Constants: `UPPER_SNAKE` — `MAX_ENTITIES`, `TRAIT_TIMEOUT_SEC`
+- Private: prefix `_` — `_redis`, `_handlers`
+- Event types: `PascalCase` dataclasses — `TelemetryEvent`, `MutationReady`
+- Channels: `UPPER_SNAKE` constants — `Channels.TELEMETRY`, `Channels.MUTATION_READY`
+- Mutation files: `trait_{name}_v{version}.py` — `trait_heat_shield_v3.py`
+
+### TypeScript
+
+- Files: `PascalCase.tsx` for components, `camelCase.ts` for utils
+- Components: `PascalCase` — `WorldCanvas`, `EvolutionFeed`
+- Hooks: `use` prefix — `useWorldStream`, `useEntityInspector`
+- Types/Interfaces: `PascalCase` — `EntityState`, `WorldFrame`
+- Constants: `UPPER_SNAKE` — `WS_ENDPOINT`, `TICK_RATE_MS`
+
+---
+
+## File Structure Rules
+
+- One class/concern per file. Do not put `EntityManager` and `BaseEntity` in the same file.
+- Maximum file length: **300 lines**. If longer, split into sub-modules.
+- Every module has `__init__.py` that re-exports the public API.
+- Imports at the top, grouped: stdlib → third-party → local. Blank line between groups.
+- No relative imports in `mutations/`. Only absolute imports from whitelist.
+
+---
+
+## Testing
+
+- Test files mirror source structure: `tests/core/test_engine.py` ↔ `backend/core/engine.py`.
+- Use `pytest` + `pytest-asyncio` for async tests.
+- Every public function needs at least one test.
+- Mock Redis and Ollama in tests — never require running services for unit tests.
+- Integration tests (requiring Docker) go in `tests/integration/`.
+- Mutation validator tests must include adversarial cases: `os.system`, `eval`, infinite loops.
+
+---
+
+## Git & Commits
+
+- Branch naming: `feat/`, `fix/`, `refactor/`, `docs/` prefixes.
+- Commit messages: imperative mood, max 72 chars first line.
+  `"Add Watcher agent with anomaly detection"` not `"Added watcher"`.
+- Never commit files in `mutations/` (except `__init__.py` and `.gitkeep`).
+  Add `mutations/*.py` to `.gitignore` (but keep `mutations/__init__.py`).
+- Never commit `.env` files. Use `.env.example` as template.
+
+---
+
+## Dependencies
+
+### Python (backend/requirements.txt)
+
+Pin major.minor, not micro:
+
+```
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27
+redis[hiredis]>=5.0
+httpx>=0.27
+pydantic>=2.5
+pydantic-settings>=2.1
+structlog>=24.1
+watchdog>=4.0
+asyncpg>=0.29
+sqlalchemy[asyncio]>=2.0
+pytest>=8.0
+pytest-asyncio>=0.23
+mypy>=1.8
+```
+
+### Frontend (frontend/package.json)
+
+```
+react: ^18
+react-dom: ^18
+pixi.js: ^7
+@pixi/react: latest
+zustand: ^4 (state management)
+```
+
+---
+
+## Performance Constraints
+
+- Tick loop budget: **16ms** (60 FPS).
+- Individual Trait execution hard limit: **2ms** (soft target) to **5ms** (hard cap via `asyncio.wait_for`).
+  - With 500 entities × 5 traits = 2500 trait executions per tick, each MUST be fast.
+  - If a single Trait takes 50ms, it will stall the entire server for 3 frames.
+- Tick time budgeting: If processing all entities would exceed 14ms, skip remaining entities this tick.
+- WebSocket frame rate: push world state at **30 FPS** to browser (every 2nd tick).
+- WebSocket protocol: Use **Binary Array Protocol** (`bytes` response) for entity positions when `entity_count >= 200`.
+  - Binary format: `[x1, y1, type1, energy1, x2, y2, ...]` as Float32Array.
+  - Use JSON only for control events (feed messages, parameter changes).
+  - This reduces bandwidth by ~10x (200KB → 20KB for 500 entities).
+- Entity cap: **500** Molbots max in MVP. Guard with `MAX_ENTITIES` in config.
+- Redis operations in tick loop: batch with `pipeline()` — no per-entity round-trips.
+- Frontend: use PixiJS `ParticleContainer` for >200 entities. Never DOM elements for entities.
+
+---
+
+## What NOT to Do (Hard Rules)
+
+1. **Do NOT use `Any` or `any`.** Period.
+2. **Do NOT modify `core/` without human approval.**
+3. **Do NOT place generated code outside `mutations/`.**
+4. **Do NOT use synchronous I/O in async functions.**
+5. **Do NOT use `exec()` or `eval()` anywhere in the codebase** (except inside `sandbox/patcher.py`
+   which uses `importlib` for controlled module loading).
+6. **Do NOT import `os`, `sys`, `subprocess`, `socket`, `shutil` in mutations.**
+7. **Do NOT create circular imports.**
+8. **Do NOT use bare `except:`.**
+9. **Do NOT hardcode Redis keys or Pub/Sub channel names.** Use constants from `bus/channels.py`.
+10. **Do NOT put business logic in API routes.** Routes are thin wrappers around bus events.
