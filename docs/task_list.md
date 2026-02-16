@@ -132,13 +132,13 @@ Setup Docker, Redis, Ollama, project skeleton — ничего из бизнес
 
 ### 1.3 World Physics & Environment
 
-- [ ] **T-016** Create `WorldPhysics` — gravity, friction, collision resolution
+- [x] **T-016** Create `WorldPhysics` — gravity, friction, collision resolution
   - File: `backend/core/world_physics.py`
   - Functions: `apply_friction(entity, friction)`, `resolve_collision(a, b)`, `apply_bounds(entity, width, height)`
   - Verify: entity at x=2001 wraps or bounces, friction reduces velocity
   - Depends: T-012
 
-- [ ] **T-017** Create `Environment` — resource map, spawn, weather
+- [x] **T-017** Create `Environment` — resource map, spawn, weather
   - File: `backend/core/environment.py`
   - Class: `Resource(x, y, amount)`, `Environment` with `respawn_resources(rate)`, `resource_density()`, `nearby_resources(x, y, radius)`
   - Verify: respawn adds resources, density calculated correctly
