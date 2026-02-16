@@ -1,28 +1,217 @@
-"""AI-Genesis entry point — FastAPI application stub.
+"""AI-Genesis entry point — simulation runner with FastAPI server.
 
-This is a minimal stub for Docker build verification.
-Full implementation will be done in Phase 1 (Task T-021).
+This module initializes all core components and starts both:
+- The simulation loop (CoreEngine)
+- The FastAPI REST API server (uvicorn)
+
+Can be run directly via `python -m backend.main` or through Docker.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+import asyncio
+import signal
+from typing import Optional
 
-# Create minimal FastAPI app for build verification
-app = FastAPI(
-    title="AI-Genesis",
-    description="Autonomous evolutionary sandbox powered by LLM",
-    version="0.1.0",
+import structlog
+import uvicorn
+
+from backend.api.app import create_app
+from backend.api.ws_handler import ConnectionManager
+from backend.bus import get_redis
+from backend.config import Settings
+from backend.core.dynamic_registry import DynamicRegistry
+from backend.core.engine import CoreEngine
+from backend.core.entity_manager import EntityManager
+from backend.core.environment import Environment
+from backend.core.world_physics import WorldPhysics
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(min_level="info"),  # INFO level
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=False,
 )
 
-
-@app.get("/")
-async def root() -> dict[str, str]:
-    """Health check endpoint."""
-    return {"status": "ok", "message": "AI-Genesis Core — Ready"}
+logger = structlog.get_logger()
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    """Health check for Docker."""
-    return {"status": "healthy"}
+class SimulationRunner:
+    """Manages simulation lifecycle and graceful shutdown."""
+
+    def __init__(self) -> None:
+        """Initialize the runner."""
+        self.engine: Optional[CoreEngine] = None
+        self.uvicorn_server: Optional[uvicorn.Server] = None
+        self.shutdown_event = asyncio.Event()
+
+    async def run(self) -> None:
+        """Initialize and run the simulation with FastAPI server.
+
+        Sets up all components:
+        - Settings
+        - Redis connection
+        - EntityManager
+        - Environment
+        - WorldPhysics
+        - DynamicRegistry
+        - CoreEngine
+        - FastAPI application
+
+        Then starts both the simulation loop and the API server.
+        """
+        logger.info("ai_genesis_starting", version="0.2.0")
+
+        # T-021: Initialize all components
+        settings = Settings()
+        logger.info("settings_loaded", tick_rate_ms=settings.tick_rate_ms)
+
+        # Initialize Redis connection
+        try:
+            redis = await get_redis(settings)
+            await redis.ping()
+            logger.info("redis_connected", url=settings.redis_url)
+        except Exception as exc:
+            logger.warning(
+                "redis_connection_failed",
+                url=settings.redis_url,
+                error=str(exc),
+                fallback="continuing_without_redis",
+            )
+            # For MVP, we can run without Redis
+            # Event bus will be needed in Phase 2
+            redis = None  # type: ignore
+
+        # Initialize core components
+        entity_manager = EntityManager(
+            world_width=settings.world_width,
+            world_height=settings.world_height,
+        )
+        logger.info("entity_manager_initialized")
+
+        environment = Environment(
+            world_width=settings.world_width,
+            world_height=settings.world_height,
+            initial_resources=100,
+            resource_energy=50.0,
+        )
+        logger.info("environment_initialized", initial_resources=100)
+
+        physics = WorldPhysics(
+            world_width=settings.world_width,
+            world_height=settings.world_height,
+            friction_coefficient=0.98,
+            boundary_mode="bounce",
+        )
+        logger.info("physics_initialized")
+
+        registry = DynamicRegistry()
+        logger.info("dynamic_registry_initialized")
+
+        # Create WebSocket connection manager (T-027)
+        ws_manager = ConnectionManager()
+        logger.info("ws_manager_initialized")
+
+        # Create the core engine
+        self.engine = CoreEngine(
+            entity_manager=entity_manager,
+            environment=environment,
+            physics=physics,
+            registry=registry,
+            redis=redis,  # type: ignore
+            settings=settings,
+            ws_manager=ws_manager,
+        )
+        logger.info("core_engine_initialized")
+
+        # Create FastAPI app (T-023 integration)
+        app = create_app(
+            engine=self.engine,
+            redis=redis,  # type: ignore
+            ws_manager=ws_manager,
+        )
+        logger.info("fastapi_app_created")
+
+        # Configure uvicorn server
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            access_log=False,  # Reduce noise
+        )
+        self.uvicorn_server = uvicorn.Server(config)
+        logger.info("uvicorn_configured", host="0.0.0.0", port=8000)
+
+        # Register signal handlers for graceful shutdown
+        def handle_shutdown(sig: int) -> None:
+            logger.info("shutdown_signal_received", signal=sig)
+            self.shutdown_event.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
+
+        # Start both the simulation engine and the API server
+        logger.info("starting_engine_and_api_server")
+
+        # Run engine and uvicorn in parallel using asyncio.gather
+        engine_task = asyncio.create_task(self.engine.run())
+        server_task = asyncio.create_task(self.uvicorn_server.serve())
+
+        logger.info(
+            "services_running",
+            simulation="running",
+            api_server="http://0.0.0.0:8000",
+            docs="http://0.0.0.0:8000/docs",
+        )
+
+        # Wait for shutdown signal
+        await self.shutdown_event.wait()
+
+        # Graceful shutdown
+        logger.info("initiating_graceful_shutdown")
+
+        # Stop the engine
+        if self.engine:
+            self.engine.stop()
+
+        # Stop the uvicorn server
+        if self.uvicorn_server:
+            self.uvicorn_server.should_exit = True
+
+        # Wait for both tasks to finish (give them 5 seconds)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(engine_task, server_task, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("shutdown_timeout")
+            engine_task.cancel()
+            server_task.cancel()
+
+        logger.info("simulation_and_api_stopped")
+
+
+async def main() -> None:
+    """Main entry point."""
+    runner = SimulationRunner()
+    try:
+        await runner.run()
+    except KeyboardInterrupt:
+        logger.info("keyboard_interrupt_received")
+    except Exception as exc:
+        logger.error("fatal_error", error=str(exc), error_type=type(exc).__name__)
+        raise
+
+
+if __name__ == "__main__":
+    # Run the simulation
+    asyncio.run(main())

@@ -1,0 +1,123 @@
+"""FastAPI application factory with dependency injection.
+
+This module provides the create_app() factory function that creates a
+configured FastAPI application. The app receives CoreEngine, EventBus,
+and Redis as dependencies from main.py rather than creating them itself.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Optional
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
+
+from backend.core.engine import CoreEngine
+from backend.api.ws_handler import ConnectionManager
+
+
+class AppState:
+    """Application state container for dependency injection.
+
+    This class holds references to shared components that need to be
+    accessed by API routes.
+    """
+
+    def __init__(
+        self,
+        engine: CoreEngine,
+        redis: Optional[Redis],
+        start_time: float,
+        ws_manager: ConnectionManager,
+    ) -> None:
+        """Initialize app state.
+
+        Args:
+            engine: The running CoreEngine instance.
+            redis: Redis connection for event bus.
+            start_time: Server start timestamp for uptime calculation.
+            ws_manager: WebSocket connection manager for real-time streaming.
+        """
+        self.engine = engine
+        self.redis = redis
+        self.start_time = start_time
+        self.ws_manager = ws_manager
+
+
+def create_app(
+    engine: CoreEngine,
+    redis: Optional[Redis] = None,
+    ws_manager: Optional[ConnectionManager] = None,
+) -> FastAPI:
+    """Create and configure FastAPI application.
+
+    Args:
+        engine: Running CoreEngine instance (already initialized in main.py).
+        redis: Optional Redis connection for event bus.
+        ws_manager: WebSocket connection manager for real-time streaming.
+
+    Returns:
+        Configured FastAPI application.
+
+    Note:
+        This uses Dependency Injection pattern - the app receives components
+        rather than creating them. The engine is already running in a
+        background task managed by main.py.
+    """
+    # Create FastAPI app
+    app = FastAPI(
+        title="AI-Genesis",
+        description="Autonomous evolutionary sandbox powered by LLM",
+        version="0.2.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # Setup CORS for development (allow all origins)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # In production, restrict to specific origins
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Create ConnectionManager if not provided
+    if ws_manager is None:
+        ws_manager = ConnectionManager()
+
+    # Store shared state in app.state for access by routes
+    app.state.app_state = AppState(
+        engine=engine,
+        redis=redis,
+        start_time=time.time(),
+        ws_manager=ws_manager,
+    )
+
+    # Import and register routers
+    from backend.api.routes_world import router as world_router
+
+    app.include_router(world_router, prefix="/api", tags=["world"])
+
+    # Health check endpoint
+    @app.get("/", tags=["health"])
+    async def root() -> dict[str, str]:
+        """Root endpoint - basic health check."""
+        return {
+            "status": "ok",
+            "service": "AI-Genesis API",
+            "version": "0.2.0",
+        }
+
+    @app.get("/health", tags=["health"])
+    async def health() -> dict[str, str]:
+        """Health check endpoint for Docker and monitoring."""
+        return {
+            "status": "healthy",
+            "engine_running": app.state.app_state.engine.running,
+            "tick": app.state.app_state.engine.tick_counter,
+        }
+
+    return app
