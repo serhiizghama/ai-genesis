@@ -14,6 +14,8 @@ interface MolbotSpriteProps {
   color: number
   /** Energy level 0–100; controls body radius (4–12 px) */
   energy: number
+  /** Optional click handler */
+  onClick?: () => void
 }
 
 /**
@@ -22,7 +24,7 @@ interface MolbotSpriteProps {
  * Shape: a filled circle (body) with two smaller circles on top (ears).
  * Body radius scales with energy so healthy creatures appear larger.
  */
-export function MolbotSprite({ x, y, color, energy }: MolbotSpriteProps) {
+export function MolbotSprite({ x, y, color, energy, onClick }: MolbotSpriteProps) {
   const bodyRadius = 4 + (Math.min(Math.max(energy, 0), 100) / 100) * 8 // 4–12 px
   const earRadius = bodyRadius * 0.4
 
@@ -45,5 +47,14 @@ export function MolbotSprite({ x, y, color, energy }: MolbotSpriteProps) {
     [bodyRadius, earRadius, color],
   )
 
-  return <pixiGraphics draw={draw} x={x} y={y} />
+  return (
+    <pixiGraphics
+      draw={draw}
+      x={x}
+      y={y}
+      eventMode={onClick ? 'static' : 'none'}
+      cursor={onClick ? 'pointer' : undefined}
+      onClick={onClick}
+    />
+  )
 }

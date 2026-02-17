@@ -129,8 +129,8 @@ def create_app(
         """Health check endpoint for Docker and monitoring."""
         return {
             "status": "healthy",
-            "engine_running": app.state.app_state.engine.running,
-            "tick": app.state.app_state.engine.tick_counter,
+            "engine_running": str(app.state.app_state.engine.running),
+            "tick": str(app.state.app_state.engine.tick_counter),
         }
 
     return app

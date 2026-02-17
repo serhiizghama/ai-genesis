@@ -71,7 +71,7 @@ export function PopulationGraph(): React.JSX.Element {
     <div
       style={{
         position: 'fixed',
-        bottom: '16px',
+        bottom: '88px',
         right: '16px',
         width: `${GRAPH_WIDTH + 20}px`,
         background: 'rgba(10, 10, 20, 0.75)',

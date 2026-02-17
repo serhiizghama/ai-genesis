@@ -279,9 +279,7 @@ class CoreEngine:
         Uses a fixed spawn rate for MVP. In future phases, this could
         be dynamic based on consumption rates or world conditions.
         """
-        # Spawn 1 resource every 2 ticks (rate = 0.5)
-        spawn_rate = 0.5
-        self.environment.respawn_resources(spawn_rate)
+        self.environment.respawn_resources(self.settings.spawn_rate)
 
     def _log_statistics(self) -> None:
         """Collect and log simulation statistics.

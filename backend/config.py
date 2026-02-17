@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     min_population: int = 20
     world_width: int = 2000
     world_height: int = 2000
+    spawn_rate: float = 0.5  # Resources spawned per tick (multiplier)
 
     # Redis connection
     redis_url: str = "redis://redis:6379/0"

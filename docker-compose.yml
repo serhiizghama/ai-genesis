@@ -1,7 +1,24 @@
 # AI-Genesis Docker Compose Configuration
-# Orchestrates core, redis, and ollama services
+# Services: frontend, core, redis, ollama
 
 services:
+  # ============================================
+  # FRONTEND (React + Nginx)
+  # ============================================
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: genesis-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - genesis-network
+
   # ============================================
   # CORE ENGINE (Python Backend)
   # ============================================
@@ -25,9 +42,15 @@ services:
       - GENESIS_POSTGRES_DSN=postgresql+asyncpg://genesis:genesis@postgres:5432/genesis
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       ollama:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     deploy:
       resources:
         limits:
@@ -87,13 +110,12 @@ services:
           cpus: '2'
           memory: 8G
     healthcheck:
-      # CRITICAL: Check that model is loaded, not just server running
-      # This prevents core from starting before llama3:8b is downloaded
+      # Check that Ollama server is up (model pull handled by entrypoint script)
       test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
-      retries: 30  # Allow 5 minutes for model download (30 * 10s)
-      start_period: 60s  # Give Ollama 60s to start before first check
+      retries: 30       # Allow up to 5 min for first model download
+      start_period: 60s
     restart: unless-stopped
     networks:
       - genesis-network

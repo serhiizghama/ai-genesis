@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
+from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 import structlog
@@ -147,6 +148,7 @@ async def update_world_params(
         "max_entities": int,
         "tick_rate_ms": int,
         "friction": float,
+        "spawn_rate": float,
     }
 
     # Validate parameter name
@@ -176,6 +178,8 @@ async def update_world_params(
             engine.settings.tick_rate_ms = typed_value
         elif param_name == "friction":
             engine.physics.friction_coefficient = typed_value
+        elif param_name == "spawn_rate":
+            engine.settings.spawn_rate = typed_value
 
         logger.info(
             "world_param_updated",
@@ -272,6 +276,75 @@ async def get_stats(request: Request) -> StatsResponse:
 # T-027: WebSocket /ws/world-stream
 # -------------------------------------------------------------------------
 
+
+# -------------------------------------------------------------------------
+# T-072: GET /api/entities/{entity_id} — entity inspector
+# -------------------------------------------------------------------------
+
+
+class EntityDetailResponse(BaseModel):
+    """Response model for entity detail endpoint."""
+
+    numeric_id: int = Field(..., description="Numeric ID (hash) as seen in stream")
+    string_id: str = Field(..., description="Internal UUID")
+    generation: int
+    age: int
+    energy: float
+    max_energy: float
+    energy_pct: float
+    state: str
+    traits: list[str] = Field(..., description="Active trait class names")
+    deactivated_traits: list[str]
+
+
+@router.get("/entities/{entity_id}", response_model=EntityDetailResponse)
+async def get_entity(entity_id: int, request: Request) -> EntityDetailResponse:
+    """Get details for a specific entity by its stream numeric ID."""
+    engine = request.app.state.app_state.engine
+    entities = engine.entity_manager.alive()
+
+    entity = next(
+        (e for e in entities if (hash(e.id) & 0xFFFFFFFF) == entity_id),
+        None,
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    trait_names = [t.__class__.__name__ for t in entity.traits]
+    return EntityDetailResponse(
+        numeric_id=entity_id,
+        string_id=entity.id,
+        generation=entity.generation,
+        age=entity.age,
+        energy=round(entity.energy, 1),
+        max_energy=entity.max_energy,
+        energy_pct=round(max(0.0, min(100.0, (entity.energy / entity.max_energy) * 100)), 1),
+        state=entity.state,
+        traits=trait_names,
+        deactivated_traits=list(entity.deactivated_traits),
+    )
+
+
+@router.post("/entities/{entity_id}/kill")
+async def kill_entity(entity_id: int, request: Request) -> dict[str, str]:
+    """Kill a specific entity (debug)."""
+    engine = request.app.state.app_state.engine
+    entities = engine.entity_manager.alive()
+
+    entity = next(
+        (e for e in entities if (hash(e.id) & 0xFFFFFFFF) == entity_id),
+        None,
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    entity.energy = 0.0
+    entity.state = "dead"
+    logger.info("entity_killed_debug", entity_id=entity.id, numeric_id=entity_id)
+    return {"status": "killed", "entity_id": entity.id}
+
+
+# -------------------------------------------------------------------------
 
 @router.websocket("/ws/feed")
 async def feed_stream(websocket: WebSocket) -> None:
