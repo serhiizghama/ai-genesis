@@ -39,11 +39,26 @@ class EvolutionTrigger:
     """
 
     trigger_id: str
-    problem_type: str  # 'starvation' | 'overpopulation' | 'low_diversity'
+    problem_type: str  # 'starvation' | 'overpopulation' | 'low_diversity' | 'manual_trigger'
     severity: str  # 'low' | 'medium' | 'high' | 'critical'
     affected_entities: list[str] = field(default_factory=list)
     suggested_area: str = ""  # 'traits' | 'physics' | 'environment'
     snapshot_key: str = ""
+
+
+@dataclass
+class EvolutionForce:
+    """Published by API when user manually triggers evolution.
+
+    Attributes:
+        trigger_id: Unique identifier for this manual trigger
+        reason: Optional reason for manual trigger
+        timestamp: Unix timestamp when triggered
+    """
+
+    trigger_id: str
+    reason: str = "Manual trigger from API"
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass

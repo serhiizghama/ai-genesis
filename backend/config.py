@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Ollama LLM service
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "llama3:8b"
-    llm_timeout_sec: int = 30
+    llm_timeout_sec: int = 120
 
     # Sandbox safety limits
     mutations_dir: str = "./mutations"

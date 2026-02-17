@@ -36,7 +36,7 @@ async def get_redis(settings: Optional[Settings] = None) -> Redis:
         _redis_client = Redis.from_url(
             settings.redis_url,
             encoding="utf-8",
-            decode_responses=True,
+            decode_responses=False,  # Changed to False for PubSub compatibility
         )
 
     return _redis_client

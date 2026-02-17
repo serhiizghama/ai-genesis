@@ -8,7 +8,7 @@ and Redis as dependencies from main.py rather than creating them itself.
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +31,7 @@ class AppState:
         redis: Optional[Redis],
         start_time: float,
         ws_manager: ConnectionManager,
+        event_bus: Optional[Any] = None,
     ) -> None:
         """Initialize app state.
 
@@ -39,17 +40,20 @@ class AppState:
             redis: Redis connection for event bus.
             start_time: Server start timestamp for uptime calculation.
             ws_manager: WebSocket connection manager for real-time streaming.
+            event_bus: Shared EventBus instance for publishing events.
         """
         self.engine = engine
         self.redis = redis
         self.start_time = start_time
         self.ws_manager = ws_manager
+        self.event_bus = event_bus
 
 
 def create_app(
     engine: CoreEngine,
     redis: Optional[Redis] = None,
     ws_manager: Optional[ConnectionManager] = None,
+    event_bus: Optional[Any] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application.
 
@@ -57,6 +61,7 @@ def create_app(
         engine: Running CoreEngine instance (already initialized in main.py).
         redis: Optional Redis connection for event bus.
         ws_manager: WebSocket connection manager for real-time streaming.
+        event_bus: Shared EventBus instance for publishing events.
 
     Returns:
         Configured FastAPI application.
@@ -94,12 +99,15 @@ def create_app(
         redis=redis,
         start_time=time.time(),
         ws_manager=ws_manager,
+        event_bus=event_bus,
     )
 
     # Import and register routers
     from backend.api.routes_world import router as world_router
+    from backend.api.routes_evolution import router as evolution_router
 
     app.include_router(world_router, prefix="/api", tags=["world"])
+    app.include_router(evolution_router, prefix="/api", tags=["evolution"])
 
     # Health check endpoint
     @app.get("/", tags=["health"])

@@ -16,6 +16,9 @@ from typing import Optional
 import structlog
 import uvicorn
 
+from backend.agents.architect import ArchitectAgent
+from backend.agents.coder import CoderAgent
+from backend.agents.llm_client import LLMClient
 from backend.agents.watcher import WatcherAgent
 from backend.api.app import create_app
 from backend.api.ws_handler import ConnectionManager
@@ -27,6 +30,7 @@ from backend.core.engine import CoreEngine
 from backend.core.entity_manager import EntityManager
 from backend.core.environment import Environment
 from backend.core.world_physics import WorldPhysics
+from backend.sandbox import CodeValidator, RuntimePatcher
 
 # Configure structured logging
 structlog.configure(
@@ -51,6 +55,9 @@ class SimulationRunner:
         """Initialize the runner."""
         self.engine: Optional[CoreEngine] = None
         self.watcher: Optional[WatcherAgent] = None
+        self.architect: Optional[ArchitectAgent] = None
+        self.coder: Optional[CoderAgent] = None
+        self.patcher: Optional[RuntimePatcher] = None
         self.uvicorn_server: Optional[uvicorn.Server] = None
         self.shutdown_event = asyncio.Event()
 
@@ -145,11 +152,46 @@ class SimulationRunner:
         )
         logger.info("watcher_agent_initialized")
 
+        # Create LLM Client (T-057)
+        llm_client = LLMClient(settings=settings)
+        logger.info("llm_client_initialized", ollama_url=settings.ollama_url)
+
+        # Create CodeValidator (T-047)
+        validator = CodeValidator(redis=redis)  # type: ignore
+        logger.info("code_validator_initialized")
+
+        # Create Architect Agent (T-057)
+        self.architect = ArchitectAgent(
+            event_bus=event_bus,
+            llm_client=llm_client,
+            settings=settings,
+        )
+        logger.info("architect_agent_initialized")
+
+        # Create Coder Agent (T-057)
+        self.coder = CoderAgent(
+            event_bus=event_bus,
+            llm_client=llm_client,
+            validator=validator,
+            settings=settings,
+        )
+        logger.info("coder_agent_initialized")
+
+        # Create RuntimePatcher (T-047)
+
+        self.patcher = RuntimePatcher(
+            event_bus=event_bus,
+            registry=registry,
+            validator=validator,
+        )
+        logger.info("runtime_patcher_initialized")
+
         # Create FastAPI app (T-023 integration)
         app = create_app(
             engine=self.engine,
             redis=redis,  # type: ignore
             ws_manager=ws_manager,
+            event_bus=event_bus,
         )
         logger.info("fastapi_app_created")
 
@@ -173,12 +215,19 @@ class SimulationRunner:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda s=sig: handle_shutdown(s))
 
-        # Start all services: engine, watcher, event bus, and API server
+        # Start all services: engine, watcher, architect, coder, patcher, event bus, and API server
         logger.info("starting_all_services")
 
-        # Run engine, watcher, event bus listener, and uvicorn in parallel
+        # Run all agents in parallel (T-057)
         engine_task = asyncio.create_task(self.engine.run())
         watcher_task = asyncio.create_task(self.watcher.run())
+        architect_task = asyncio.create_task(self.architect.run())
+        coder_task = asyncio.create_task(self.coder.run())
+        patcher_task = asyncio.create_task(self.patcher.run())
+
+        # Give agents a moment to subscribe before starting event bus listener
+        await asyncio.sleep(1)  # Wait for all subscriptions to complete
+
         event_bus_task = asyncio.create_task(event_bus.listen())
         server_task = asyncio.create_task(self.uvicorn_server.serve())
 
@@ -186,6 +235,9 @@ class SimulationRunner:
             "services_running",
             simulation="running",
             watcher="running",
+            architect="running",
+            coder="running",
+            patcher="running",
             api_server="http://0.0.0.0:8000",
             docs="http://0.0.0.0:8000/docs",
         )
@@ -217,6 +269,9 @@ class SimulationRunner:
                 asyncio.gather(
                     engine_task,
                     watcher_task,
+                    architect_task,
+                    coder_task,
+                    patcher_task,
                     event_bus_task,
                     server_task,
                     return_exceptions=True,
@@ -227,6 +282,9 @@ class SimulationRunner:
             logger.warning("shutdown_timeout")
             engine_task.cancel()
             watcher_task.cancel()
+            architect_task.cancel()
+            coder_task.cancel()
+            patcher_task.cancel()
             event_bus_task.cancel()
             server_task.cancel()
 
