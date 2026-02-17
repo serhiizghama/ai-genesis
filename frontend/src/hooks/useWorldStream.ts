@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { useWorldStore } from '../store/worldStore';
 
 /**
  * Entity state from the world stream.
@@ -57,6 +58,7 @@ export function useWorldStream(): WorldStreamState {
       ws.onopen = () => {
         console.log('[useWorldStream] Connected to world stream');
         setConnected(true);
+        useWorldStore.getState().setConnected(true);
 
         // Clear any pending reconnect
         if (reconnectTimeoutRef.current !== null) {
@@ -72,6 +74,7 @@ export function useWorldStream(): WorldStreamState {
             const parsedData = parseBinaryFrame(event.data);
             setEntities(parsedData.entities);
             setTick(parsedData.tick);
+            useWorldStore.getState().setWorldState(parsedData.tick, parsedData.entities);
           } catch (error) {
             console.error('[useWorldStream] Error parsing binary frame:', error);
           }
@@ -83,11 +86,13 @@ export function useWorldStream(): WorldStreamState {
       ws.onerror = (error) => {
         console.error('[useWorldStream] WebSocket error:', error);
         setConnected(false);
+        useWorldStore.getState().setConnected(false);
       };
 
       ws.onclose = () => {
         console.log('[useWorldStream] Disconnected from world stream');
         setConnected(false);
+        useWorldStore.getState().setConnected(false);
         wsRef.current = null;
 
         // Attempt to reconnect after 2 seconds

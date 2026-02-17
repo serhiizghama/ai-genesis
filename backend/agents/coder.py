@@ -160,12 +160,30 @@ class CoderAgent:
         validation_result = await self.validator.validate(code)
 
         if not validation_result.is_valid:
-            logger.error(
-                "coder_validation_failed",
+            logger.warning(
+                "coder_validation_failed_retrying",
                 plan_id=plan.plan_id,
                 error=validation_result.error,
             )
-            return None
+
+            # Retry once with the validation error included in the prompt
+            code = await self._generate_code(
+                trait_name, plan.description, previous_error=validation_result.error
+            )
+
+            if code is None:
+                logger.error("coder_retry_llm_failed", plan_id=plan.plan_id)
+                return None
+
+            validation_result = await self.validator.validate(code)
+
+            if not validation_result.is_valid:
+                logger.error(
+                    "coder_validation_failed_after_retry",
+                    plan_id=plan.plan_id,
+                    error=validation_result.error,
+                )
+                return None
 
         # Increment version
         self.mutation_counter += 1
@@ -208,12 +226,18 @@ class CoderAgent:
 
         return mutation
 
-    async def _generate_code(self, trait_name: str, description: str) -> str | None:
+    async def _generate_code(
+        self,
+        trait_name: str,
+        description: str,
+        previous_error: str | None = None,
+    ) -> str | None:
         """Generate Python code for the trait.
 
         Args:
             trait_name: Name of the trait to generate.
             description: Description of what the trait should do.
+            previous_error: Validation error from a previous attempt, if retrying.
 
         Returns:
             Generated Python code or None if LLM fails.
@@ -243,8 +267,16 @@ Entity methods:
 - move(dx, dy): move entity
 - consume_resource(resource): eat resource, gain energy"""
 
+        # Prefix the prompt with the previous error if this is a retry
+        retry_prefix = ""
+        if previous_error:
+            retry_prefix = (
+                f"PREVIOUS ATTEMPT FAILED VALIDATION: {previous_error}\n"
+                "Fix the issue and try again. Do NOT use forbidden imports (e.g. os, sys, subprocess).\n\n"
+            )
+
         # Create user prompt
-        user_prompt = f"""Create a Python trait class named '{trait_name}' that implements this behavior:
+        user_prompt = retry_prefix + f"""Create a Python trait class named '{trait_name}' that implements this behavior:
 
 {description}
 

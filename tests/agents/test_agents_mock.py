@@ -331,6 +331,58 @@ class BadTrait:
         # Verify mutation is None (failure handled)
         assert mutation is None
 
+    @pytest.mark.asyncio
+    async def test_coder_retries_on_validation_failure(
+        self,
+        mock_event_bus: AsyncMock,
+        mock_llm: MockLLMClient,
+        validator: CodeValidator,
+        settings: Settings,
+    ) -> None:
+        """Test that Coder retries with error context when first attempt fails validation."""
+        # First response: invalid code (forbidden import)
+        invalid_code = "import os\n\nclass BadTrait:\n    async def execute(self, entity):\n        pass\n"
+
+        # Second response: valid trait code
+        valid_code = '''from __future__ import annotations
+
+class BaseTrait:
+    """Base trait protocol."""
+    pass
+
+class RetryTrait(BaseTrait):
+    """Trait that succeeds on second attempt."""
+
+    async def execute(self, entity) -> None:
+        entity.state["retried"] = True
+'''
+
+        mock_llm.text_responses = [invalid_code, f"```python\n{valid_code}\n```"]
+
+        # Create coder
+        coder = CoderAgent(mock_event_bus, mock_llm, validator, settings)  # type: ignore
+
+        # Create plan
+        plan = EvolutionPlan(
+            plan_id="retry_plan",
+            trigger_id="retry_trigger",
+            action_type="new_trait",
+            description="Trait that requires a retry",
+            target_class="retry_trait",
+        )
+
+        # Generate and save code
+        mutation = await coder._generate_and_save_code(plan)
+
+        # Verify second attempt succeeded
+        assert mutation is not None
+        assert mutation.plan_id == "retry_plan"
+        assert mutation.trait_name == "RetryTrait"
+        assert os.path.exists(mutation.file_path)
+
+        # Verify LLM was called twice (initial attempt + one retry)
+        assert mock_llm.call_count == 2
+
 
 class TestFullChain:
     """Test the full chain from Trigger to MutationReady."""

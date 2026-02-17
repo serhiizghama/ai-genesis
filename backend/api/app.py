@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from backend.core.engine import CoreEngine
-from backend.api.ws_handler import ConnectionManager
+from backend.api.ws_handler import ConnectionManager, FeedConnectionManager
 
 
 class AppState:
@@ -32,6 +32,7 @@ class AppState:
         start_time: float,
         ws_manager: ConnectionManager,
         event_bus: Optional[Any] = None,
+        feed_ws_manager: Optional[FeedConnectionManager] = None,
     ) -> None:
         """Initialize app state.
 
@@ -41,12 +42,14 @@ class AppState:
             start_time: Server start timestamp for uptime calculation.
             ws_manager: WebSocket connection manager for real-time streaming.
             event_bus: Shared EventBus instance for publishing events.
+            feed_ws_manager: WebSocket manager for Evolution Feed streaming.
         """
         self.engine = engine
         self.redis = redis
         self.start_time = start_time
         self.ws_manager = ws_manager
         self.event_bus = event_bus
+        self.feed_ws_manager = feed_ws_manager or FeedConnectionManager()
 
 
 def create_app(
@@ -54,6 +57,7 @@ def create_app(
     redis: Optional[Redis] = None,
     ws_manager: Optional[ConnectionManager] = None,
     event_bus: Optional[Any] = None,
+    feed_ws_manager: Optional[FeedConnectionManager] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application.
 
@@ -100,6 +104,7 @@ def create_app(
         start_time=time.time(),
         ws_manager=ws_manager,
         event_bus=event_bus,
+        feed_ws_manager=feed_ws_manager,
     )
 
     # Import and register routers

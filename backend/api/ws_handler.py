@@ -2,12 +2,14 @@
 
 Provides:
 - ConnectionManager for managing active WebSocket connections
+- FeedConnectionManager for Evolution Feed streaming
 - Binary protocol for efficient world state transmission
 - WebSocket endpoint for streaming world updates
 """
 
 from __future__ import annotations
 
+import json
 import struct
 from typing import Optional
 
@@ -109,6 +111,54 @@ class ConnectionManager:
                 disconnected.append(connection)
 
         # Clean up disconnected clients
+        for connection in disconnected:
+            self.disconnect(connection)
+
+
+class FeedConnectionManager:
+    """Manages WebSocket connections for Evolution Feed streaming.
+
+    Broadcasts JSON feed messages from agents to all connected clients.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the feed connection manager."""
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        """Accept a new feed WebSocket connection."""
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(
+            "feed_ws_client_connected",
+            total_connections=len(self.active_connections),
+        )
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        """Remove a feed WebSocket connection."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info(
+                "feed_ws_client_disconnected",
+                total_connections=len(self.active_connections),
+            )
+
+    async def broadcast_json(self, data: dict[str, str | float]) -> None:
+        """Broadcast a JSON message to all connected feed clients.
+
+        Args:
+            data: Dict with agent, message, timestamp fields.
+        """
+        disconnected: list[WebSocket] = []
+        text = json.dumps(data)
+
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(text)
+            except Exception as exc:
+                logger.warning("feed_ws_broadcast_error", error=str(exc))
+                disconnected.append(connection)
+
         for connection in disconnected:
             self.disconnect(connection)
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import structlog
 
@@ -16,6 +16,7 @@ from backend.bus.channels import Channels
 from backend.bus.events import EvolutionPlan, EvolutionTrigger, FeedMessage
 
 if TYPE_CHECKING:
+    from backend.agents.cycle_manager import EvolutionCycleManager
     from backend.bus.event_bus import EventBus
     from backend.config import Settings
 
@@ -34,6 +35,7 @@ class ArchitectAgent:
         event_bus: EventBus,
         llm_client: LLMClient,
         settings: Settings,
+        cycle_manager: Optional[EvolutionCycleManager] = None,
     ) -> None:
         """Initialize the Architect Agent.
 
@@ -41,10 +43,12 @@ class ArchitectAgent:
             event_bus: Event bus for pub/sub communication.
             llm_client: LLM client for generating solutions.
             settings: Application settings.
+            cycle_manager: Optional cycle manager for mutex-based serialisation.
         """
         self.event_bus = event_bus
         self.llm_client = llm_client
         self.settings = settings
+        self.cycle_manager = cycle_manager
 
     async def run(self) -> None:
         """Start listening to evolution triggers.
@@ -65,6 +69,25 @@ class ArchitectAgent:
                 problem_type=event.problem_type,
                 severity=event.severity,
             )
+
+            # Acquire cycle lock — reject if another cycle is running
+            if self.cycle_manager is not None:
+                acquired = await self.cycle_manager.start_cycle(event)
+                if not acquired:
+                    logger.warning(
+                        "architect_trigger_rejected_cycle_locked",
+                        trigger_id=event.trigger_id,
+                    )
+                    await self.event_bus.publish(
+                        Channels.FEED,
+                        FeedMessage(
+                            agent="architect",
+                            action="skipped",
+                            message="⏳ Архитектор: Цикл эволюции уже запущен, пропускаю триггер.",
+                            metadata={"trigger_id": event.trigger_id},
+                        ),
+                    )
+                    return
 
             # Send feed message about starting work
             await self.event_bus.publish(
@@ -94,6 +117,8 @@ class ArchitectAgent:
                         metadata={"trigger_id": event.trigger_id},
                     ),
                 )
+                if self.cycle_manager is not None:
+                    await self.cycle_manager.fail_cycle("LLM plan generation failed")
                 return
 
             # Publish the plan
@@ -104,6 +129,10 @@ class ArchitectAgent:
                 plan_id=plan.plan_id,
                 action_type=plan.action_type,
             )
+
+            # Advance cycle stage to "coding" (Coder picks it up next)
+            if self.cycle_manager is not None:
+                await self.cycle_manager.update_stage("coding")
 
             # Send success feed message
             await self.event_bus.publish(

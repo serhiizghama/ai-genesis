@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 import structlog
 
-from backend.api.ws_handler import websocket_endpoint
+from backend.api.ws_handler import FeedConnectionManager, websocket_endpoint
 
 logger = structlog.get_logger()
 
@@ -271,6 +271,31 @@ async def get_stats(request: Request) -> StatsResponse:
 # -------------------------------------------------------------------------
 # T-027: WebSocket /ws/world-stream
 # -------------------------------------------------------------------------
+
+
+@router.websocket("/ws/feed")
+async def feed_stream(websocket: WebSocket) -> None:
+    """WebSocket endpoint for Evolution Feed streaming.
+
+    Clients connect to receive JSON feed messages from agents:
+    {agent, message, timestamp}
+
+    Agent values: 'watcher' | 'architect' | 'coder' | 'patcher'
+    """
+    app_state = websocket.app.state.app_state
+    feed_manager: FeedConnectionManager = app_state.feed_ws_manager
+    await feed_manager.connect(websocket)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data and data != "ping":
+                logger.debug("feed_ws_client_message", message=data)
+    except WebSocketDisconnect:
+        feed_manager.disconnect(websocket)
+    except Exception as exc:
+        logger.error("feed_ws_error", error=str(exc), error_type=type(exc).__name__)
+        feed_manager.disconnect(websocket)
 
 
 @router.websocket("/ws/world-stream")

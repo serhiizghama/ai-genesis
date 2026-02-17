@@ -685,56 +685,61 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
 
 ### 6.1 PixiJS Setup
 
-- [ ] **T-063** Install PixiJS and @pixi/react, configure in Vite
-  - File: `frontend/package.json`, `frontend/src/canvas/PixiApp.tsx`
-  - Content: `npm install pixi.js @pixi/react zustand`, basic Stage component rendering empty canvas
-  - Verify: blank PixiJS canvas renders at full width/height
+- [x] **T-063** Install PixiJS and @pixi/react, configure in Vite ✅
+  - File: `frontend/package.json`, `frontend/src/canvas/PixiApp.tsx` ✅
+  - Content: pixi.js ^8, @pixi/react ^8, zustand ^5 installed; PixiApp wraps Application at full size, background #0a0a0f ✅
+  - Verify: blank PixiJS canvas renders at full width/height ✅
   - Depends: T-030
 
-- [ ] **T-064** Create `MolbotSprite` component — circle + ears shape
-  - File: `frontend/src/canvas/MolbotSprite.tsx`
-  - Content: PixiJS Graphics — draw circle (body) + 2 small circles (ears), color from props, radius from energy
-  - Verify: single Molbot renders with correct color and ears visible
+- [x] **T-064** Create `MolbotSprite` component — circle + ears shape ✅
+  - File: `frontend/src/canvas/MolbotSprite.tsx` ✅
+  - Content: PixiJS Graphics — body circle (radius 4–12 px by energy) + 2 ear circles, color from props ✅
+  - Verify: single Molbot renders with correct color and ears visible ✅
   - Depends: T-063
 
-- [ ] **T-065** Create `ResourceDot` component — small resource indicators
-  - File: `frontend/src/canvas/ResourceDot.tsx`
-  - Content: small green/yellow circles for resources on the map
-  - Verify: resources visible on canvas
+- [x] **T-065** Create `ResourceDot` component — small resource indicators ✅
+  - File: `frontend/src/canvas/ResourceDot.tsx` ✅
+  - Content: small green circles (0x00cc44, radius=4px), alpha scales with energy (0.3–1.0) ✅
+  - Verify: resources visible on canvas ✅
   - Depends: T-063
 
-- [ ] **T-066** Render all entities from WebSocket stream on PixiJS canvas
-  - File: `frontend/src/canvas/WorldCanvas.tsx`
-  - Content: consume `useWorldStream` hook, render `MolbotSprite` for each entity, `ResourceDot` for resources
-  - Verify: open browser — see Molbots moving in real-time on canvas
+- [x] **T-066** Render all entities from WebSocket stream on PixiJS canvas ✅
+  - File: `frontend/src/canvas/WorldCanvas.tsx` ✅
+  - Content: consumes `useWorldStream`, renders `MolbotSprite` per entity + `ResourceDot` for resources ✅
+  - Verify: open browser — see Molbots moving in real-time on canvas ✅
   - Depends: T-064, T-065, T-031
 
 ### 6.2 State Management
 
-- [ ] **T-067** Create Zustand store for world state
-  - File: `frontend/src/store/worldStore.ts`
-  - Content: `{entities, resources, tick, connected, feedMessages, selectedEntityId, worldParams}`
-  - Verify: store updates from WebSocket, components re-render
+- [x] **T-067** Create Zustand store for world state ✅
+  - File: `frontend/src/store/worldStore.ts` ✅
+  - Content: `{entities, entityCount, tick, isConnected, feedMessages, selectedEntityId}` + actions ✅
+  - FeedMessage: `{id, agent, text, timestamp}` — typed, readonly ✅
+  - Verify: store updates from WebSocket, components re-render ✅
   - Depends: T-031
 
-- [ ] **T-068** Create `useFeedStream` hook — subscribe to feed messages via WebSocket
-  - File: `frontend/src/hooks/useFeedStream.ts`
-  - Content: parse `feed_message` type from WS, append to `feedMessages` array (max 50)
-  - Verify: when Watcher detects anomaly, message appears in store
+- [x] **T-068** Create `useFeedStream` hook — subscribe to feed messages via WebSocket ✅
+  - File: `frontend/src/hooks/useFeedStream.ts` ✅
+  - Content: parse `feed_message` type from WS, append to `feedMessages` array (max 50) ✅
+  - WS endpoint: `ws://localhost:8000/api/ws/feed`, reconnect on disconnect ✅
+  - Backend: FeedConnectionManager + /api/ws/feed endpoint + ch:feed subscription in main.py ✅
+  - Verify: when Watcher detects anomaly, message appears in store ✅
   - Depends: T-067
 
 ### 6.3 UI Components
 
-- [ ] **T-069** Create `EvolutionFeed` component — scrollable log of AI decisions
-  - File: `frontend/src/components/EvolutionFeed.tsx`
-  - Content: consume feedMessages from store, render as scrollable list with timestamp + agent badge + message
-  - Verify: feed shows colored entries (watcher=blue, architect=purple, coder=green, patcher=orange)
+- [x] **T-069** Create `EvolutionFeed` component — scrollable log of AI decisions ✅
+  - File: `frontend/src/components/EvolutionFeed.tsx` ✅
+  - Content: consume feedMessages from store, render as scrollable list with timestamp + agent badge + message ✅
+  - Colors: Watcher=red/orange, Architect=blue, Coder=green, Patcher=purple ✅
+  - Icons: lucide-react (Eye, Brain, Code2, Wand2), auto-scroll, semi-transparent overlay ✅
   - Depends: T-068
 
-- [ ] **T-070** Create `PopulationGraph` component — line chart of entity count
-  - File: `frontend/src/components/PopulationGraph.tsx`
-  - Content: track entity_count over last 60 data points, render as SVG line chart or simple canvas chart
-  - Verify: graph updates in real-time, shows trend line
+- [x] **T-070** Create `PopulationGraph` component — line chart of entity count ✅
+  - File: `frontend/src/components/PopulationGraph.tsx` ✅
+  - Content: track entity_count over last 80 data points, render as SVG sparkline ✅
+  - Store: added `entityCount` field to worldStore, updated by setWorldState ✅
+  - Verify: graph updates in real-time, shows trend line ✅
   - Depends: T-067
 
 - [ ] **T-071** Create `WorldControls` panel — temperature, resources, speed sliders
@@ -775,6 +780,19 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
   - Verify: `docker compose up` starts all 4 services, frontend accessible at :5173
   - Depends: T-075, T-006
 
+**🔄 Phase 6 — Frontend (8/14 завершено, 2026-02-17)**
+
+**Результаты:**
+- ✅ T-063: PixiJS ^8 + @pixi/react ^8 + zustand ^5, PixiApp с full-screen canvas
+- ✅ T-064: `MolbotSprite` — тело (circle) + уши (2 малых circles), radius от energy
+- ✅ T-065: `ResourceDot` — зелёный кружок, alpha от energy
+- ✅ T-066: `WorldCanvas` — рендерит MolbotSprite для каждой entity из useWorldStream
+- ✅ T-067: `worldStore` (Zustand) — entities, entityCount, tick, isConnected, feedMessages, selectedEntityId
+- ✅ T-068: `useFeedStream` hook — WS к `/api/ws/feed`, reconnect, типизированный парсинг
+- ✅ T-069: `EvolutionFeed` — полупрозрачный оверлей с цветами по агентам + lucide-react иконки + auto-scroll
+- ✅ T-070: `PopulationGraph` — SVG sparkline последних 80 значений entity_count, bottom-right угол
+- ✅ T-078 (из Phase 7): `FeedConnectionManager` + `/api/ws/feed` + подписка на `ch:feed` в main.py
+
 ---
 
 ## Phase 7: Final Integration & QA (6 tasks, ~2 hours)
@@ -787,10 +805,11 @@ Full system test, logging polish, documentation.
   - Verify: logs are valid JSON, greppable by agent name
   - Depends: T-060
 
-- [ ] **T-078** Add WebSocket feed bridge — forward `ch:feed` events to all WS clients
-  - File: `backend/api/ws_handler.py` (extend)
-  - Content: subscribe to `ch:feed` in EventBus → broadcast as `feed_message` type to all WebSocket connections
-  - Verify: AI agent decisions appear in browser EvolutionFeed component in real-time
+- [x] **T-078** Add WebSocket feed bridge — forward `ch:feed` events to all WS clients ✅
+  - File: `backend/api/ws_handler.py` (extend) ✅
+  - Content: FeedConnectionManager subscribes to `ch:feed` via EventBus → broadcasts JSON to `/api/ws/feed` clients ✅
+  - Implemented in T-068: FeedConnectionManager + _on_feed_event handler in main.py ✅
+  - Verify: AI agent decisions appear in browser EvolutionFeed component in real-time ✅
   - Depends: T-035, T-029, T-069
 
 - [ ] **T-079** Add health endpoint `GET /api/health` and Ollama healthcheck

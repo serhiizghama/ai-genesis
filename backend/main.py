@@ -18,10 +18,13 @@ import uvicorn
 
 from backend.agents.architect import ArchitectAgent
 from backend.agents.coder import CoderAgent
+from backend.agents.cycle_manager import EvolutionCycleManager
 from backend.agents.llm_client import LLMClient
 from backend.agents.watcher import WatcherAgent
+from backend.bus.channels import Channels
+from backend.bus.events import FeedMessage as FeedEvent
 from backend.api.app import create_app
-from backend.api.ws_handler import ConnectionManager
+from backend.api.ws_handler import ConnectionManager, FeedConnectionManager
 from backend.bus import get_redis
 from backend.bus.event_bus import EventBus
 from backend.config import Settings
@@ -132,6 +135,10 @@ class SimulationRunner:
         ws_manager = ConnectionManager()
         logger.info("ws_manager_initialized")
 
+        # Create Feed WebSocket connection manager (T-068)
+        feed_ws_manager = FeedConnectionManager()
+        logger.info("feed_ws_manager_initialized")
+
         # Create the core engine
         self.engine = CoreEngine(
             entity_manager=entity_manager,
@@ -160,11 +167,16 @@ class SimulationRunner:
         validator = CodeValidator(redis=redis)  # type: ignore
         logger.info("code_validator_initialized")
 
+        # Create EvolutionCycleManager (T-061)
+        cycle_manager = EvolutionCycleManager(redis=redis, settings=settings)  # type: ignore
+        logger.info("cycle_manager_initialized")
+
         # Create Architect Agent (T-057)
         self.architect = ArchitectAgent(
             event_bus=event_bus,
             llm_client=llm_client,
             settings=settings,
+            cycle_manager=cycle_manager,
         )
         logger.info("architect_agent_initialized")
 
@@ -176,6 +188,17 @@ class SimulationRunner:
             settings=settings,
         )
         logger.info("coder_agent_initialized")
+
+        # Subscribe feed_ws_manager to ch:feed events (T-068)
+        async def _on_feed_event(event: FeedEvent) -> None:
+            await feed_ws_manager.broadcast_json({
+                "agent": event.agent,
+                "message": event.message,
+                "timestamp": event.timestamp,
+            })
+
+        await event_bus.subscribe(Channels.FEED, _on_feed_event, FeedEvent)
+        logger.info("feed_channel_subscribed")
 
         # Create RuntimePatcher (T-047)
 
@@ -192,6 +215,7 @@ class SimulationRunner:
             redis=redis,  # type: ignore
             ws_manager=ws_manager,
             event_bus=event_bus,
+            feed_ws_manager=feed_ws_manager,
         )
         logger.info("fastapi_app_created")
 
