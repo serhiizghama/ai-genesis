@@ -4,6 +4,7 @@ Provides endpoints for:
 - Getting current world state
 - Updating world parameters
 - Retrieving simulation statistics
+- Health check with Redis and Ollama probes
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -275,6 +277,78 @@ async def get_stats(request: Request) -> StatsResponse:
 # -------------------------------------------------------------------------
 # T-027: WebSocket /ws/world-stream
 # -------------------------------------------------------------------------
+
+
+# -------------------------------------------------------------------------
+# T-079: GET /api/health
+# -------------------------------------------------------------------------
+
+
+class HealthServicesStatus(BaseModel):
+    """Status of individual backing services."""
+
+    redis: bool
+    ollama: bool
+    core: bool
+
+
+class HealthResponse(BaseModel):
+    """Response model for health check endpoint."""
+
+    status: str = Field(..., description='"ok" or "degraded"')
+    services: HealthServicesStatus
+
+
+@router.get("/health", response_model=HealthResponse)
+async def get_health(request: Request) -> HealthResponse:
+    """Check health of Redis, Ollama, and the simulation core.
+
+    Returns 200 with status="ok" when all services are reachable.
+    Returns 503 with status="degraded" and per-service detail when any
+    service is unavailable.
+    """
+    app_state = request.app.state.app_state
+    engine = app_state.engine
+    redis = app_state.redis
+
+    # --- Redis ping ---
+    redis_ok = False
+    if redis is not None:
+        try:
+            await redis.ping()
+            redis_ok = True
+        except Exception:
+            pass
+
+    # --- Ollama reachability ---
+    ollama_ok = False
+    ollama_url: str = engine.settings.ollama_url
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{ollama_url}/api/tags")
+            ollama_ok = resp.status_code == 200
+    except Exception:
+        pass
+
+    # --- Core engine ---
+    core_ok: bool = engine.running
+
+    services = HealthServicesStatus(
+        redis=redis_ok,
+        ollama=ollama_ok,
+        core=core_ok,
+    )
+
+    all_ok = redis_ok and ollama_ok and core_ok
+    status_str = "ok" if all_ok else "degraded"
+
+    if not all_ok:
+        raise HTTPException(
+            status_code=503,
+            detail=HealthResponse(status=status_str, services=services).model_dump(),
+        )
+
+    return HealthResponse(status=status_str, services=services)
 
 
 # -------------------------------------------------------------------------

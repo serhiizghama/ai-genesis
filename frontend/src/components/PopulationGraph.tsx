@@ -68,32 +68,11 @@ export function PopulationGraph(): React.JSX.Element {
   const current = history[history.length - 1] ?? entityCount;
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: '88px',
-        right: '16px',
-        width: `${GRAPH_WIDTH + 20}px`,
-        background: 'rgba(10, 10, 20, 0.75)',
-        backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '6px',
-        padding: '8px 10px',
-        fontFamily: 'monospace',
-        zIndex: 100,
-      }}
-    >
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-        <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-          Population
-        </span>
-        <span style={{ fontSize: '13px', fontWeight: 700, color: LINE_COLOR }}>
-          {current}
-        </span>
+    <div className="population-graph">
+      <div className="population-graph__header-row">
+        <span className="population-graph__label">Population</span>
+        <span className="population-graph__count">{current}</span>
       </div>
-
-      {/* Sparkline */}
       <Sparkline values={history} width={GRAPH_WIDTH} height={GRAPH_HEIGHT} />
     </div>
   );

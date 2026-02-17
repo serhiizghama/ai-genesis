@@ -762,25 +762,28 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
 
 ### 6.4 Layout & Polish
 
-- [ ] **T-074** Create main layout: Canvas (left 70%) + Sidebar (right 30%)
+- [x] **T-074** Create main layout: Canvas (left 75%) + Sidebar (right 25%) ✅
   - File: `frontend/src/App.tsx`
-  - Content: CSS Grid/Flex layout. Left: WorldCanvas. Right: stacked panels — EvolutionFeed, PopulationGraph, WorldControls, EntityInspector
-  - Verify: responsive layout, all panels visible without overlap
+  - CSS Grid layout (3fr 1fr). Left: WorldCanvas (PixiApp). Right: stacked panels — EvolutionFeed, PopulationGraph, EntityInspector, WorldControls ✅
+  - Verify: responsive layout, all panels visible without overlap ✅
   - Depends: T-066, T-069, T-070, T-071, T-072
 
-- [ ] **T-075** Add dark theme, header with "AI-Genesis" title and connection status indicator
-  - File: `frontend/src/App.tsx` (extend), `frontend/src/index.css`
-  - Content: dark background (#0a0a0f), green dot when WS connected, red when disconnected
-  - Verify: looks clean, connection indicator reflects actual WebSocket state
+- [x] **T-075** Add dark theme, header with "AI-Genesis" title and connection status indicator ✅
+  - File: `frontend/src/App.tsx` (rewritten), `frontend/src/index.css` (rewritten)
+  - Dark background (#0a0a0f), gradient title "AI-GENESIS", green dot (connected) / red pulsing dot (disconnected) ✅
+  - All 4 sidebar components adapted for sidebar layout (removed position:fixed) ✅
+  - WS URLs made dynamic (window.location.host) to work in both dev and Docker ✅
+  - Verify: looks clean, connection indicator reflects actual WebSocket state ✅
   - Depends: T-074
 
-- [ ] **T-076** Create `Dockerfile.web` and add `web` service to docker-compose
-  - File: `Dockerfile.web`, `docker-compose.yml` (extend)
-  - Content: node:20-alpine, npm install, npm run build, serve with nginx or dev mode
-  - Verify: `docker compose up` starts all 4 services, frontend accessible at :5173
+- [x] **T-076** Add frontend to Docker infrastructure ✅
+  - File: `Dockerfile.frontend` (Node 22 build → Nginx alpine), `docker-compose.yml` (frontend service port 3000)
+  - `nginx.conf`: `/api/ws/` proxied with WebSocket upgrade headers; `/api/` proxied as REST ✅
+  - WS hooks use dynamic `window.location.host` → works through nginx proxy ✅
+  - Verify: `docker compose up --build` starts all 4 services; frontend at localhost:3000 ✅
   - Depends: T-075, T-006
 
-**🔄 Phase 6 — Frontend (8/14 завершено, 2026-02-17)**
+**🔄 Phase 6 — Frontend (11/14 завершено, 2026-02-17)**
 
 **Результаты:**
 - ✅ T-063: PixiJS ^8 + @pixi/react ^8 + zustand ^5, PixiApp с full-screen canvas

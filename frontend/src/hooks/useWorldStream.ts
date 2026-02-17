@@ -48,7 +48,8 @@ export function useWorldStream(): WorldStreamState {
     const connect = () => {
       // Connect to WebSocket directly to backend
       // Note: endpoint is /api/ws/world-stream (with /api prefix)
-      const ws = new WebSocket('ws://localhost:8000/api/ws/world-stream');
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/api/ws/world-stream`);
 
       // CRITICAL: Set binary type to arraybuffer for binary protocol
       ws.binaryType = 'arraybuffer';

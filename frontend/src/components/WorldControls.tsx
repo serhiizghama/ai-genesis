@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const API = 'http://localhost:8000/api'
+const API = '/api'
 
 async function postParam(param: string, value: number): Promise<void> {
   await fetch(`${API}/world/params`, {
@@ -44,29 +44,13 @@ export function WorldControls(): React.JSX.Element {
   }
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      height: 72,
-      background: 'rgba(10,10,15,0.85)',
-      backdropFilter: 'blur(8px)',
-      borderTop: '1px solid rgba(255,255,255,0.08)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 32,
-      padding: '0 24px',
-      zIndex: 100,
-      fontFamily: 'monospace',
-    }}>
+    <div className="world-controls">
+      <div className="world-controls__title">Controls</div>
 
       {/* Time Scale */}
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
-        <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-          Time Scale
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="world-controls__row">
+        <span className="world-controls__row-label">Time Scale</span>
+        <div className="world-controls__row-inner">
           <input
             type="range"
             min={1}
@@ -74,18 +58,16 @@ export function WorldControls(): React.JSX.Element {
             step={1}
             value={timeScale}
             onChange={(e) => handleTimeScale(Number(e.target.value))}
-            style={sliderStyle}
+            className="world-controls__slider"
           />
-          <span style={{ color: '#4dff91', fontSize: 13, minWidth: 32 }}>{timeScale}x</span>
+          <span className="world-controls__value">{timeScale}x</span>
         </div>
-      </label>
+      </div>
 
       {/* Spawn Rate */}
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
-        <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-          Spawn Rate
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="world-controls__row">
+        <span className="world-controls__row-label">Spawn Rate</span>
+        <div className="world-controls__row-inner">
           <input
             type="range"
             min={0.0}
@@ -93,47 +75,20 @@ export function WorldControls(): React.JSX.Element {
             step={0.1}
             value={spawnRate}
             onChange={(e) => handleSpawnRate(Number(e.target.value))}
-            style={sliderStyle}
+            className="world-controls__slider"
           />
-          <span style={{ color: '#4dff91', fontSize: 13, minWidth: 32 }}>{spawnRate.toFixed(1)}x</span>
+          <span className="world-controls__value">{spawnRate.toFixed(1)}x</span>
         </div>
-      </label>
-
-      {/* Spacer */}
-      <div style={{ flex: 1 }} />
+      </div>
 
       {/* Force Evolution Button */}
       <button
         onClick={handleForceEvolution}
         disabled={evolving}
-        style={{
-          background: evolving ? 'rgba(74,222,128,0.15)' : 'rgba(74,222,128,0.1)',
-          border: `1px solid ${evolving ? 'rgba(74,222,128,0.6)' : 'rgba(74,222,128,0.3)'}`,
-          color: evolving ? 'rgba(74,222,128,0.6)' : '#4dff91',
-          fontFamily: 'monospace',
-          fontSize: 13,
-          fontWeight: 600,
-          letterSpacing: '0.05em',
-          padding: '8px 20px',
-          borderRadius: 6,
-          cursor: evolving ? 'default' : 'pointer',
-          transition: 'all 0.2s',
-          whiteSpace: 'nowrap',
-        }}
+        className="world-controls__btn"
       >
         {evolving ? '⏳ Triggering...' : '🧬 Force Evolution'}
       </button>
     </div>
   )
-}
-
-const sliderStyle: React.CSSProperties = {
-  appearance: 'none',
-  WebkitAppearance: 'none',
-  width: 120,
-  height: 4,
-  borderRadius: 2,
-  background: 'rgba(255,255,255,0.15)',
-  outline: 'none',
-  cursor: 'pointer',
 }

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useWorldStore } from '../store/worldStore';
 
-const WS_FEED_URL = 'ws://localhost:8000/api/ws/feed';
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_FEED_URL = `${wsProtocol}//${window.location.host}/api/ws/feed`;
 const RECONNECT_DELAY_MS = 2000;
 
 interface FeedPayload {

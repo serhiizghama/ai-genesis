@@ -104,50 +104,9 @@ export function EvolutionFeed(): React.JSX.Element {
   }, [feedMessages]);
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: '16px',
-        right: '16px',
-        width: '280px',
-        maxHeight: 'calc(100vh - 160px)',
-        display: 'flex',
-        flexDirection: 'column',
-        background: 'rgba(10, 10, 20, 0.75)',
-        backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '6px',
-        overflow: 'hidden',
-        fontFamily: 'monospace',
-        zIndex: 100,
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          padding: '8px 10px',
-          borderBottom: '1px solid rgba(255,255,255,0.08)',
-          fontSize: '10px',
-          fontWeight: 700,
-          color: 'rgba(255,255,255,0.5)',
-          textTransform: 'uppercase',
-          letterSpacing: '1px',
-          flexShrink: 0,
-        }}
-      >
-        Evolution Feed
-      </div>
-
-      {/* Messages */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '6px',
-          scrollbarWidth: 'thin',
-          scrollbarColor: 'rgba(255,255,255,0.15) transparent',
-        }}
-      >
+    <div className="evolution-feed">
+      <div className="evolution-feed__header-row">Evolution Feed</div>
+      <div className="evolution-feed__scroll">
         {feedMessages.length === 0 ? (
           <div style={{ padding: '12px 8px', fontSize: '10px', color: 'rgba(255,255,255,0.25)', textAlign: 'center' }}>
             Waiting for agent activity…
