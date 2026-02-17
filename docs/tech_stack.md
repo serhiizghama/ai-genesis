@@ -26,8 +26,8 @@
 │           │                             │  │   Redis 7        │  │  │
 │  ┌────────▼─────────────────────────┐   │  │   State + PubSub │  │  │
 │  │         web-container            │   │  └──────────────────┘  │  │
-│  │  React 18 + Vite + PixiJS 7     │   │                        │  │
-│  │  Port :5173                      │   └────────────────────────┘  │
+│  │  React 19 + Vite + PixiJS 8     │   │                        │  │
+│  │  Port :3000 (Nginx)              │   └────────────────────────┘  │
 │  └──────────────────────────────────┘                               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -39,7 +39,7 @@
 | `core` | python:3.11-slim | 8000 | 2 cores | 4 GB | `./mutations:/app/mutations` |
 | `ollama` | ollama/ollama | 11434 | 4 cores | 16 GB | `ollama_models:/root/.ollama` |
 | `redis` | redis:7-alpine | 6379 | 1 core | 1 GB | `redis_data:/data` |
-| `web` | node:20-alpine | 5173 | 1 core | 512 MB | — |
+| `frontend` | nginx:alpine (built from node:22) | 3000 | 1 core | 512 MB | — |
 
 ---
 
@@ -228,135 +228,13 @@ UI подписывается через `XREAD BLOCK 0 STREAMS feed:log $`, Web
 
 ---
 
-## 4. Data Layer: PostgreSQL
+## 4. Async Event Bus: Core ↔ LLM Interaction
 
-PostgreSQL хранит историю — всё, что нужно пережить рестарт и что представляет ценность для анализа. В MVP используется для логирования эволюции; в v0.2 станет основным хранилищем аналитики.
+> **MVP Architecture Note:** Redis is the only persistence layer. PostgreSQL is deferred to v0.2.
+> All historical data (evolution cycles, mutation metadata) lives in Redis with TTLs.
+> World snapshots persist in Redis `ws:snapshot:{tick}` (5 min TTL) only.
 
-### 4.1 ER-Diagram (Logical)
-
-```
-┌──────────────────┐       ┌──────────────────────┐
-│   mutations      │       │   evolution_cycles    │
-├──────────────────┤       ├──────────────────────┤
-│ id          UUID │◄──┐   │ id            UUID    │
-│ cycle_id    UUID │───┼──►│ started_at  TIMESTAMP │
-│ trait_name  TEXT  │   │   │ finished_at TIMESTAMP │
-│ version     INT  │   │   │ trigger_type TEXT     │
-│ file_path   TEXT │   │   │ problem     JSONB     │
-│ source_code TEXT │   │   │ plan        JSONB     │
-│ code_hash   TEXT │   │   │ status      TEXT      │
-│ status      TEXT │   │   │ mutations_count INT   │
-│ created_at  TS   │   │   └──────────────────────┘
-│ applied_at  TS   │   │
-│ error_log   TEXT │   │   ┌──────────────────────┐
-└──────────────────┘   │   │  world_snapshots      │
-                       │   ├──────────────────────┤
-┌──────────────────┐   │   │ id           UUID     │
-│ trait_performance │   │   │ tick         BIGINT   │
-├──────────────────┤   │   │ timestamp    TS       │
-│ id          UUID │   │   │ entity_count INT      │
-│ mutation_id UUID │───┘   │ avg_energy   FLOAT    │
-│ tick_applied  BIG│       │ births       INT      │
-│ tick_measured BIG│       │ deaths       INT      │
-│ entities_using IN│       │ death_causes JSONB    │
-│ avg_energy_delta │       │ resource_density FLOAT│
-│ survival_rate  FL│       │ trait_diversity  INT   │
-│ measured_at   TS │       │ params_snapshot JSONB  │
-└──────────────────┘       └──────────────────────┘
-```
-
-### 4.2 Table Definitions
-
-```sql
--- История всех циклов эволюции
-CREATE TABLE evolution_cycles (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at     TIMESTAMPTZ,
-    trigger_type    TEXT NOT NULL,            -- 'starvation', 'overpopulation', 'manual', ...
-    problem         JSONB NOT NULL,           -- WorldReport от Watcher
-    plan            JSONB,                    -- EvolutionPlan от Architect
-    status          TEXT NOT NULL DEFAULT 'in_progress',
-                                              -- 'in_progress' | 'completed' | 'failed' | 'rolled_back'
-    mutations_count INT DEFAULT 0
-);
-
-CREATE INDEX idx_cycles_status ON evolution_cycles(status);
-CREATE INDEX idx_cycles_started ON evolution_cycles(started_at DESC);
-
-
--- Все сгенерированные мутации (Trait-файлы)
-CREATE TABLE mutations (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cycle_id        UUID REFERENCES evolution_cycles(id) ON DELETE SET NULL,
-    trait_name      TEXT NOT NULL,             -- 'energy_scavenger', 'heat_shield'
-    version         INT NOT NULL,             -- Инкрементальная версия Trait'а
-    file_path       TEXT NOT NULL,            -- 'mutations/trait_heat_shield_v3.py'
-    source_code     TEXT NOT NULL,            -- Полный исходный код модуля
-    code_hash       TEXT NOT NULL,            -- SHA-256 от source_code (дедупликация)
-    status          TEXT NOT NULL DEFAULT 'pending',
-                                              -- 'pending' | 'validated' | 'applied' | 'failed' | 'rolled_back'
-    error_log       TEXT,                     -- Ошибка при валидации/загрузке
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_at      TIMESTAMPTZ,
-
-    UNIQUE(trait_name, version)
-);
-
-CREATE INDEX idx_mutations_cycle ON mutations(cycle_id);
-CREATE INDEX idx_mutations_trait ON mutations(trait_name, version DESC);
-CREATE INDEX idx_mutations_hash ON mutations(code_hash);
-
-
--- Метрики эффективности каждого Trait'а после применения
-CREATE TABLE trait_performance (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    mutation_id     UUID NOT NULL REFERENCES mutations(id) ON DELETE CASCADE,
-    tick_applied    BIGINT NOT NULL,          -- Тик, на котором Trait был загружен
-    tick_measured   BIGINT NOT NULL,          -- Тик замера
-    entities_using  INT NOT NULL,             -- Сколько Molbot'ов используют этот Trait
-    avg_energy_delta FLOAT,                   -- Среднее изменение энергии у носителей
-    survival_rate   FLOAT,                    -- % выживших среди носителей
-    measured_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_trait_perf_mutation ON trait_performance(mutation_id);
-CREATE INDEX idx_trait_perf_tick ON trait_performance(tick_measured DESC);
-
-
--- Периодические снимки состояния мира (раз в 5 минут)
-CREATE TABLE world_snapshots (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tick             BIGINT NOT NULL,
-    timestamp        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    entity_count     INT NOT NULL,
-    avg_energy       FLOAT NOT NULL,
-    births           INT NOT NULL DEFAULT 0,
-    deaths           INT NOT NULL DEFAULT 0,
-    death_causes     JSONB,                   -- {"starvation": 5, "age": 2, "collision": 1}
-    resource_density FLOAT,
-    trait_diversity  INT,                      -- Кол-во уникальных активных Trait'ов
-    params_snapshot  JSONB                     -- Копия ws:params на момент снимка
-);
-
-CREATE INDEX idx_snapshots_tick ON world_snapshots(tick DESC);
-CREATE INDEX idx_snapshots_time ON world_snapshots(timestamp DESC);
-```
-
-### 4.3 Data Lifecycle
-
-| Данные | Запись | Частота | Retention |
-|--------|--------|---------|-----------|
-| `evolution_cycles` | Agents Pipeline | По триггеру (1-5 мин) | Permanent |
-| `mutations` | Coder Agent | По триггеру | Permanent |
-| `trait_performance` | Watcher Agent | Каждые 60 сек для каждого активного Trait | 30 дней |
-| `world_snapshots` | Core Engine | Каждые 5 мин | 7 дней |
-
----
-
-## 5. Async Event Bus: Core ↔ LLM Interaction
-
-### 5.1 Architecture
+### 4.1 Architecture
 
 Core и LLM-агенты **никогда не общаются напрямую**. Вся коммуникация идёт через асинхронную шину событий на базе Redis Pub/Sub.
 
@@ -388,7 +266,7 @@ Core и LLM-агенты **никогда не общаются напрямую
 └─────────────┘
 ```
 
-### 5.2 Event Types (dataclasses)
+### 4.2 Event Types (dataclasses)
 
 ```python
 from dataclasses import dataclass, field
@@ -471,7 +349,7 @@ class FeedMessage:
     timestamp: float = field(default_factory=time.time)
 ```
 
-### 5.3 Event Bus Implementation
+### 4.3 Event Bus Implementation
 
 ```python
 import asyncio
@@ -510,7 +388,7 @@ class EventBus:
                 asyncio.create_task(handler(data))
 ```
 
-### 5.4 Full Evolution Cycle (Sequence)
+### 4.4 Full Evolution Cycle (Sequence)
 
 ```
 Time ──────────────────────────────────────────────────────────►
@@ -573,7 +451,7 @@ Core Engine           Watcher            Architect           Coder             P
     ▼                    ▼                   ▼                  ▼                  ▼
 ```
 
-### 5.5 Agent Concurrency Model
+### 4.5 Agent Concurrency Model
 
 ```python
 async def main():
@@ -602,9 +480,9 @@ async def main():
 
 ---
 
-## 6. Sandbox: Safe Code Execution
+## 5. Sandbox: Safe Code Execution
 
-### 6.1 Threat Model
+### 5.1 Threat Model
 
 LLM может сгенерировать код, который:
 - **Крашит процесс:** бесконечный цикл, деление на ноль, stack overflow.
@@ -612,7 +490,7 @@ LLM может сгенерировать код, который:
 - **Потребляет ресурсы:** бесконечная аллокация памяти, CPU-bound операции.
 - **Нарушает контракт:** меняет сигнатуру `execute()`, возвращает неожиданный тип.
 
-### 6.2 Validation Pipeline
+### 5.2 Validation Pipeline
 
 ```
 LLM Output (raw string)
@@ -662,7 +540,7 @@ LLM Output (raw string)
    Status: "validated"
 ```
 
-### 6.3 Validator Implementation
+### 5.3 Validator Implementation
 
 ```python
 import ast
@@ -798,7 +676,7 @@ class CodeValidator:
         return None
 ```
 
-### 6.4 Runtime Patcher Implementation
+### 5.4 Runtime Patcher Implementation
 
 ```python
 import importlib
@@ -893,7 +771,7 @@ class RuntimePatcher:
         return self._loaded_modules.get(trait_name)
 ```
 
-### 6.5 Execution Safety (Trait Runtime)
+### 5.5 Execution Safety (Trait Runtime)
 
 Даже после валидации Trait может зависнуть или упасть в рантайме. Core защищается при вызове:
 
@@ -947,7 +825,7 @@ class TraitExecutor:
             entity.deactivated_traits.append(trait.__class__.__name__)
 ```
 
-### 6.6 Security Summary
+### 5.6 Security Summary
 
 | Layer | Mechanism | What It Catches |
 |-------|-----------|----------------|
@@ -963,9 +841,9 @@ class TraitExecutor:
 
 ---
 
-## 7. API Contracts
+## 6. API Contracts
 
-### 7.1 REST Endpoints
+### 6.1 REST Endpoints
 
 | Method | Path | Body | Response | Description |
 |--------|------|------|----------|-------------|
@@ -977,7 +855,7 @@ class TraitExecutor:
 | GET | `/api/mutations/{id}/source` | — | `{source_code}` | Исходный код мутации |
 | GET | `/api/stats` | — | `SystemStats` | Метрики: uptime, entity_count, etc. |
 
-### 7.2 WebSocket Protocol
+### 6.2 WebSocket Protocol
 
 **Endpoint:** `ws://localhost:8000/ws/world-stream`
 
@@ -1050,7 +928,7 @@ WebSocket Binary Frame:
 
 ---
 
-## 8. Configuration (Pydantic Settings)
+## 7. Configuration (Pydantic Settings)
 
 ```python
 from pydantic_settings import BaseSettings
@@ -1064,16 +942,13 @@ class Settings(BaseSettings):
     world_width: int = 2000
     world_height: int = 2000
 
-    # Redis
+    # Redis (only persistence layer for MVP)
     redis_url: str = "redis://redis:6379/0"
-
-    # PostgreSQL
-    postgres_dsn: str = "postgresql+asyncpg://genesis:genesis@postgres:5432/genesis"
 
     # Ollama
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "llama3:8b"
-    llm_timeout_sec: int = 30
+    llm_timeout_sec: int = 120
 
     # Sandbox
     mutations_dir: str = "./mutations"
@@ -1103,9 +978,9 @@ class Settings(BaseSettings):
 
 ---
 
-## 9. Process Lifecycle & Memory Management
+## 8. Process Lifecycle & Memory Management
 
-### 9.1 Garbage Collection Strategy
+### 8.1 Garbage Collection Strategy
 
 **Проблема:** При hot-reload через `importlib` старые версии классов остаются в памяти, если на них есть хоть одна ссылка (например, в `entity.traits`). Через неделю работы 24/7 это приведет к MemoryError.
 
@@ -1123,7 +998,7 @@ class Settings(BaseSettings):
    - Отслеживать `sys.getsizeof(DynamicRegistry)` и `len(sys.modules)`.
    - Алерт при превышении порога.
 
-### 9.2 Soft Restart (для MVP опционально, для Production критично)
+### 8.2 Soft Restart (для MVP опционально, для Production критично)
 
 **Механизм:**
 - Раз в 24 часа (или при достижении 1000 мутаций) Core:

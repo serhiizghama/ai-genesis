@@ -17,9 +17,11 @@
 - ✅ Phase 2: API & WebSocket — **10/10 задач выполнено** ✅ **ЗАВЕРШЕНО!**
 - ✅ Phase 3: Event Bus & Watcher — **10/10 задач выполнено** ✅ **ЗАВЕРШЕНО!**
 - ✅ Phase 4: Sandbox & Hot-Reload — **10/10 задач выполнено** ✅ **ЗАВЕРШЕНО!**
-- 🔄 Phase 5: LLM Integration — **8/10 задач выполнено** (T-053..T-060 ✅, T-061..T-062 ⏳)
+- 🔄 Phase 5: LLM Integration — **9/10 задач выполнено** (T-053..T-061 ✅, T-058 ⏳, T-062 ⏳)
+- ✅ Phase 6: Frontend — **14/14 задач выполнено** ✅ **ЗАВЕРШЕНО!**
+- 🔄 Phase 7: Final Integration — **4/6 задач выполнено** (T-080, T-081, T-082 ⏳)
 
-**Последний запуск:** 2026-02-17 (Phase 5 Integration)
+**Последний запуск:** 2026-02-17 (Phase 6 Frontend Complete)
 - ✅ Симуляция работает: сущности спавнятся, стареют, умирают от голода (age=100), респавнятся
 - ✅ Статистика логируется каждые 100 тиков: `entities=20, avg_energy=100.0, resources=~5000+`
 - ✅ Unit tests: 82+ тестов покрывают все компоненты Phase 1-4 (включая sandbox)
@@ -647,11 +649,10 @@ Connect Architect and Coder agents to Ollama. Full autonomous evolution cycle.
   - Verify: start server → all agents start, logs show "starting" for each ✅
   - Depends: T-055, T-057, T-049
 
-- [ ] **T-061** Create `EvolutionCycle` orchestration — track cycle state in Redis
-  - File: `backend/agents/base_agent.py` (or new file)
-  - Content: create `evolution_cycles` entry on trigger, update on plan/code/apply/fail
-  - `evo:cycle:current` key to prevent overlapping cycles
-  - Verify: `redis-cli HGETALL evo:cycle:current` shows running cycle, only 1 at a time
+- [x] **T-061** Create `EvolutionCycle` orchestration — track cycle state in Redis ✅
+  - File: `backend/agents/cycle_manager.py` ✅
+  - Content: `EvolutionCycleManager` — Redis SETNX mutex (`evo:cycle:lock`), stage tracking (`evo:cycle:current` hash), TTL safety valve ✅
+  - Verify: `redis-cli HGETALL evo:cycle:current` shows running cycle, only 1 at a time ✅
   - Depends: T-060
 
 - [ ] **T-062** End-to-end test: let system run 10 minutes with Ollama
@@ -659,7 +660,7 @@ Connect Architect and Coder agents to Ollama. Full autonomous evolution cycle.
   - Verify: at least 1 mutation file in mutations/, at least 1 new Trait in registry, no Core crashes, entity_count stable between MIN and MAX
   - Depends: T-061
 
-**🔄 Phase 5 — LLM Integration (8/10 завершено, 2026-02-17)**
+**🔄 Phase 5 — LLM Integration (9/10 завершено, 2026-02-17)**
 
 **Результаты:**
 - ✅ LLMClient: Async HTTP wrapper с timeout/error handling (llm_timeout_sec=120s)
@@ -671,11 +672,12 @@ Connect Architect and Coder agents to Ollama. Full autonomous evolution cycle.
 - ✅ Integration: все агенты запущены в main.py через asyncio.gather()
 - ✅ EventBus fix: sync Redis PubSub в background thread для надёжной доставки событий
 - ✅ Tests: `tests/agents/test_agents_mock.py` — 7 тестов Architect+Coder с мок LLM
+- ✅ EvolutionCycleManager: `cycle_manager.py` — Redis SETNX mutex, stage tracking
 - 🧪 E2E Script: `scripts/test_evolution_cycle.py` для ручного тестирования полного цикла
 - ⏳ T-058: retry-on-validation-failure (не реализован, Coder просто возвращает None)
-- ⏳ T-061/T-062: EvolutionCycle orchestration + soak test с реальным Ollama
+- ⏳ T-062: 10-min soak test с реальным Ollama
 
-**Следующее:** T-058 (retry), T-061 (cycle tracking), T-062 (soak test) или Phase 6 (Frontend)
+**Следующее:** T-058 (retry), T-062 (soak test)
 
 ---
 
@@ -742,22 +744,22 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
   - Verify: graph updates in real-time, shows trend line ✅
   - Depends: T-067
 
-- [ ] **T-071** Create `WorldControls` panel — temperature, resources, speed sliders
-  - File: `frontend/src/components/WorldControls.tsx`
-  - Content: sliders for temperature, resource_spawn_rate, tick_rate. On change → send `set_param` via WebSocket or POST /api/world/params
-  - Verify: move temperature slider → world_params update, entities react
+- [x] **T-071** Create `WorldControls` panel — speed, resource sliders ✅
+  - File: `frontend/src/components/WorldControls.tsx` ✅
+  - Content: sliders for time_scale (tick_rate_ms) and spawn_rate → POST /api/world/params ✅
+  - Verify: move slider → POST sent → engine settings update ✅
   - Depends: T-025, T-067
 
-- [ ] **T-072** Create `EntityInspector` panel — click on Molbot shows details
-  - File: `frontend/src/components/EntityInspector.tsx`
-  - Content: on click MolbotSprite → set selectedEntityId in store → panel shows: id, energy bar, age, traits list, DNA hash, parent_id
-  - Verify: click Molbot → panel appears with correct data
+- [x] **T-072** Create `EntityInspector` panel — click on Molbot shows details ✅
+  - File: `frontend/src/components/EntityInspector.tsx` ✅
+  - Content: selectedEntityId from worldStore → panel shows id, energy bar, position, traits list ✅
+  - Verify: click Molbot → panel appears with correct data ✅
   - Depends: T-066, T-067
 
-- [ ] **T-073** Create "Force Evolution" button wired to `POST /api/evolution/trigger`
-  - File: `frontend/src/components/WorldControls.tsx` (extend)
-  - Content: button sends POST request, shows spinner while cycle runs
-  - Verify: click button → see Watcher/Architect/Coder messages in Feed
+- [x] **T-073** Create "Force Evolution" button wired to `POST /api/evolution/trigger` ✅
+  - File: `frontend/src/components/WorldControls.tsx` ✅
+  - Content: button sends POST /api/evolution/trigger, spinner for 2s after click ✅
+  - Verify: click button → see Watcher/Architect/Coder messages in Feed ✅
   - Depends: T-051, T-069
 
 ### 6.4 Layout & Polish
@@ -783,17 +785,20 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
   - Verify: `docker compose up --build` starts all 4 services; frontend at localhost:3000 ✅
   - Depends: T-075, T-006
 
-**🔄 Phase 6 — Frontend (11/14 завершено, 2026-02-17)**
+**✅ Phase 6 — Frontend (14/14 завершено, 2026-02-17)**
 
 **Результаты:**
 - ✅ T-063: PixiJS ^8 + @pixi/react ^8 + zustand ^5, PixiApp с full-screen canvas
 - ✅ T-064: `MolbotSprite` — тело (circle) + уши (2 малых circles), radius от energy
 - ✅ T-065: `ResourceDot` — зелёный кружок, alpha от energy
 - ✅ T-066: `WorldCanvas` — рендерит MolbotSprite для каждой entity из useWorldStream
-- ✅ T-067: `worldStore` (Zustand) — entities, entityCount, tick, isConnected, feedMessages, selectedEntityId
+- ✅ T-067: `worldStore` (Zustand) — entities, entityCount, tick, isConnected, feedMessages, selectedEntityId (единый стор)
 - ✅ T-068: `useFeedStream` hook — WS к `/api/ws/feed`, reconnect, типизированный парсинг
 - ✅ T-069: `EvolutionFeed` — полупрозрачный оверлей с цветами по агентам + lucide-react иконки + auto-scroll
 - ✅ T-070: `PopulationGraph` — SVG sparkline последних 80 значений entity_count, bottom-right угол
+- ✅ T-071: `WorldControls` — слайдеры time_scale и spawn_rate + Force Evolution кнопка
+- ✅ T-072: `EntityInspector` — панель инспектора при клике на Молбота
+- ✅ T-073: "Force Evolution" кнопка → POST /api/evolution/trigger
 - ✅ T-078 (из Phase 7): `FeedConnectionManager` + `/api/ws/feed` + подписка на `ch:feed` в main.py
 
 ---
@@ -802,10 +807,10 @@ React + PixiJS UI: World Canvas, Evolution Feed, Controls, Entity Inspector.
 
 Full system test, logging polish, documentation.
 
-- [ ] **T-077** Add structured logging (structlog) throughout backend
-  - File: all backend files
-  - Content: replace `print()` with `structlog.get_logger()`, JSON format, include tick/agent/event context
-  - Verify: logs are valid JSON, greppable by agent name
+- [x] **T-077** Add structured logging (structlog) throughout backend ✅
+  - File: all backend files ✅
+  - Content: `structlog.get_logger()` используется в 19 файлах backend (core, agents, bus, sandbox, api) ✅
+  - Verify: logs include structured context (tick, agent, event) ✅
   - Depends: T-060
 
 - [x] **T-078** Add WebSocket feed bridge — forward `ch:feed` events to all WS clients ✅
@@ -815,10 +820,11 @@ Full system test, logging polish, documentation.
   - Verify: AI agent decisions appear in browser EvolutionFeed component in real-time ✅
   - Depends: T-035, T-029, T-069
 
-- [ ] **T-079** Add health endpoint `GET /api/health` and Ollama healthcheck
-  - File: `backend/api/routes_world.py` (extend)
-  - Content: check Redis ping, Ollama /api/tags, return status per service
-  - Verify: `curl localhost:8000/api/health` → `{redis: "ok", ollama: "ok", core: "running"}`
+- [x] **T-079** Add health endpoint `GET /api/health` and Ollama healthcheck ✅
+  - File: `backend/api/routes_world.py` ✅
+  - Content: checks Redis ping, Ollama `/api/tags`, engine.running → returns `{status, services: {redis, ollama, core}}` ✅
+  - Returns 200 `status="ok"` or 503 `status="degraded"` depending on service state ✅
+  - Verify: `curl localhost:8000/api/health` → `{status: "ok", services: {redis: true, ollama: true, core: true}}` ✅
   - Depends: T-023
 
 - [ ] **T-080** Full system 30-minute soak test

@@ -1,7 +1,11 @@
 # AI-Genesis — Frontend Blueprint
 
-React 18 + Vite + PixiJS 7 + Zustand. TypeScript strict mode.
+React 19 + Vite + PixiJS 8 + Zustand 5. TypeScript strict mode.
 Ни одного `any`. Все пропсы — через `interface`.
+
+> **MVP Architecture Decision:** Используется единый `worldStore` вместо трёх отдельных сторов.
+> `feedMessages` и `selectedEntityId` включены прямо в `worldStore`.
+> Отдельные `feedStore` и `uiStore` — для v0.2, когда сложность интерфейса вырастет.
 
 ---
 
@@ -50,15 +54,11 @@ frontend/
 │   │   └── api.ts                      # WorldParams, SystemStats
 │   │
 │   ├── store/
-│   │   ├── worldStore.ts              # Zustand: entities, tick, resources
-│   │   ├── feedStore.ts               # Zustand: feed messages
-│   │   └── uiStore.ts                 # Zustand: selectedEntityId, panelState
+│   │   └── worldStore.ts              # Zustand: entities, tick, resources, feedMessages, selectedEntityId
 │   │
 │   ├── hooks/
-│   │   ├── useWorldStream.ts          # WebSocket → worldStore
-│   │   ├── useFeedStream.ts           # WebSocket feed events → feedStore
-│   │   ├── useEntitySelection.ts      # Click entity → uiStore
-│   │   └── useWorldApi.ts             # REST calls: set params, trigger evolution
+│   │   ├── useWorldStream.ts          # WebSocket → worldStore (entities, tick)
+│   │   └── useFeedStream.ts           # WebSocket feed events → worldStore.feedMessages
 │   │
 │   ├── canvas/
 │   │   ├── WorldCanvas.tsx            # PixiJS Stage wrapper
@@ -198,6 +198,10 @@ export interface MutationInfo {
 ---
 
 ## 4. State Management (Zustand)
+
+> **MVP Implementation:** Все три стора объединены в единый `worldStore`.
+> `feedMessages` (max 50) и `selectedEntityId` живут в нём же.
+> Код ниже — оригинальный дизайн с тремя сторами, актуален для v0.2.
 
 Три изолированных store. Нет единого God-store — каждый компонент подписывается
 только на нужный срез.

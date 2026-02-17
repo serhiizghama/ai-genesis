@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     # Redis connection
     redis_url: str = "redis://redis:6379/0"
 
-    # PostgreSQL connection (used in later phases)
-    postgres_dsn: str = "postgresql+asyncpg://genesis:genesis@postgres:5432/genesis"
-
     # Ollama LLM service
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "llama3:8b"
