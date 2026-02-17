@@ -44,6 +44,7 @@ class EvolutionTrigger:
     affected_entities: list[str] = field(default_factory=list)
     suggested_area: str = ""  # 'traits' | 'physics' | 'environment'
     snapshot_key: str = ""
+    cycle_id: str = ""  # evolution cycle ID threaded through watcher → architect → coder → patcher
 
 
 @dataclass
@@ -78,8 +79,12 @@ class EvolutionPlan:
     trigger_id: str
     action_type: str  # 'new_trait' | 'modify_trait' | 'adjust_params'
     description: str
-    target_class: Optional[str] = None  # 'EntityLogic', 'WorldPhysics', etc.
+    target_class: Optional[str] = None  # trait name used by Coder
     target_method: Optional[str] = None
+    cycle_id: str = ""  # evolution cycle ID threaded from Watcher through all agents
+    arch_target_class: str = ""  # spec target_class: 'Trait'|'WorldPhysics'|'Environment'|'EntityLogic'
+    expected_outcome: str = ""
+    constraints: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -101,6 +106,7 @@ class MutationReady:
     trait_name: str
     version: int
     code_hash: str
+    cycle_id: str = ""  # evolution cycle ID threaded from Watcher through all agents
 
 
 @dataclass
@@ -152,5 +158,5 @@ class FeedMessage:
     agent: str  # 'watcher' | 'architect' | 'coder' | 'patcher'
     action: str
     message: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)

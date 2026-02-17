@@ -67,8 +67,8 @@ body {
 
 .header__stats {
   display: flex;
-  gap: 20px;
-  font-size: 12px;
+  gap: 24px;
+  align-items: center;
   font-family: var(--font-mono);
   color: var(--text-secondary);
 }
@@ -103,6 +103,10 @@ body {
   flex: 1;
   overflow: hidden;
   min-height: 0;
+}
+
+.main-layout--with-panel {
+  grid-template-columns: 3fr 1fr 300px;
 }
 
 .canvas-area {

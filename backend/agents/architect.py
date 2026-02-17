@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_VALID_ACTION_TYPES: frozenset[str] = frozenset({"new_trait", "modify_trait", "adjust_params"})
+_VALID_ARCH_CLASSES: frozenset[str] = frozenset({"Trait", "WorldPhysics", "Environment", "EntityLogic"})
+
 
 class ArchitectAgent:
     """Agent that designs evolutionary solutions to detected problems.
@@ -63,9 +66,12 @@ class ArchitectAgent:
             Args:
                 event: The evolution trigger to process.
             """
+            cycle_id = event.cycle_id
+
             logger.info(
                 "architect_received_trigger",
                 trigger_id=event.trigger_id,
+                cycle_id=cycle_id,
                 problem_type=event.problem_type,
                 severity=event.severity,
             )
@@ -84,7 +90,7 @@ class ArchitectAgent:
                             agent="architect",
                             action="skipped",
                             message="⏳ Архитектор: Цикл эволюции уже запущен, пропускаю триггер.",
-                            metadata={"trigger_id": event.trigger_id},
+                            metadata={"cycle_id": cycle_id, "trigger_id": event.trigger_id},
                         ),
                     )
                     return
@@ -96,12 +102,12 @@ class ArchitectAgent:
                     agent="architect",
                     action="analyzing",
                     message=f"🧠 Архитектор: Анализирую проблему '{event.problem_type}'...",
-                    metadata={"trigger_id": event.trigger_id},
+                    metadata={"cycle_id": cycle_id, "trigger_id": event.trigger_id},
                 ),
             )
 
             # Generate evolution plan
-            plan = await self._create_plan(event)
+            plan = await self._create_plan(event, cycle_id)
 
             if plan is None:
                 logger.warning(
@@ -114,19 +120,20 @@ class ArchitectAgent:
                         agent="architect",
                         action="failed",
                         message="❌ Архитектор: Не удалось создать план эволюции.",
-                        metadata={"trigger_id": event.trigger_id},
+                        metadata={"cycle_id": cycle_id, "trigger_id": event.trigger_id},
                     ),
                 )
                 if self.cycle_manager is not None:
                     await self.cycle_manager.fail_cycle("LLM plan generation failed")
                 return
 
-            # Publish the plan
+            # Publish the plan (carries cycle_id to Coder)
             await self.event_bus.publish(Channels.EVOLUTION_PLAN, plan)
 
             logger.info(
                 "architect_plan_created",
                 plan_id=plan.plan_id,
+                cycle_id=cycle_id,
                 action_type=plan.action_type,
             )
 
@@ -134,16 +141,31 @@ class ArchitectAgent:
             if self.cycle_manager is not None:
                 await self.cycle_manager.update_stage("coding")
 
-            # Send success feed message
+            # Short human-readable label for the log message
+            short_desc = plan.description[:80] if len(plan.description) > 80 else plan.description
+
+            # Send detailed feed message per spec section 2.2
             await self.event_bus.publish(
                 Channels.FEED,
                 FeedMessage(
                     agent="architect",
                     action="plan_created",
-                    message=f"✅ Архитектор: Создан план — {plan.description}",
+                    message=f"✅ План: {short_desc}",
                     metadata={
-                        "plan_id": plan.plan_id,
-                        "action_type": plan.action_type,
+                        "cycle_id": cycle_id,
+                        "trigger": {
+                            "problem_type": event.problem_type,
+                            "severity": event.severity,
+                            "snapshot_tick": None,
+                        },
+                        "plan": {
+                            "change_type": plan.action_type,
+                            "target_class": plan.arch_target_class,
+                            "target_method": plan.target_method,
+                            "description": plan.description,
+                            "expected_outcome": plan.expected_outcome,
+                            "constraints": plan.constraints,
+                        },
                     },
                 ),
             )
@@ -161,11 +183,16 @@ class ArchitectAgent:
         while True:
             await asyncio.sleep(60)  # Sleep to keep task alive
 
-    async def _create_plan(self, trigger: EvolutionTrigger) -> EvolutionPlan | None:
+    async def _create_plan(
+        self,
+        trigger: EvolutionTrigger,
+        cycle_id: str = "",
+    ) -> EvolutionPlan | None:
         """Create an evolution plan for the given trigger.
 
         Args:
             trigger: The evolution trigger containing problem details.
+            cycle_id: Evolution cycle ID to thread through the plan.
 
         Returns:
             EvolutionPlan if successful, None if LLM fails.
@@ -199,10 +226,15 @@ Respond with JSON in this format:
 {{
     "trait_name": "descriptive_name_in_snake_case",
     "description": "brief description of what the trait does and how it solves the problem",
-    "action_type": "new_trait"
+    "action_type": "new_trait" | "modify_trait" | "adjust_params",
+    "arch_target_class": "Trait" | "WorldPhysics" | "Environment" | "EntityLogic",
+    "target_method": "execute" | "apply" | "calculate_movement" | null,
+    "expected_outcome": "brief description of expected improvement",
+    "constraints": ["No loops > 100 iterations", "Must complete in < 5ms"]
 }}
 
-Keep trait names simple and descriptive (e.g., "heat_resistance", "food_seeker", "energy_saver")."""
+Keep trait names simple and descriptive (e.g., "heat_resistance", "food_seeker", "energy_saver").
+For most new traits use action_type "new_trait" and arch_target_class "Trait"."""
 
         # Call LLM
         result = await self.llm_client.generate_json(
@@ -211,6 +243,10 @@ Keep trait names simple and descriptive (e.g., "heat_resistance", "food_seeker",
                 "trait_name": "string",
                 "description": "string",
                 "action_type": "string",
+                "arch_target_class": "string",
+                "target_method": "string or null",
+                "expected_outcome": "string",
+                "constraints": "list of strings",
             },
         )
 
@@ -227,13 +263,39 @@ Keep trait names simple and descriptive (e.g., "heat_resistance", "food_seeker",
             )
             return None
 
-        # Create evolution plan
+        # Sanitise and validate enum fields
+        action_type = str(result.get("action_type", "new_trait"))
+        if action_type not in _VALID_ACTION_TYPES:
+            action_type = "new_trait"
+
+        arch_target_class = str(result.get("arch_target_class", "Trait"))
+        if arch_target_class not in _VALID_ARCH_CLASSES:
+            arch_target_class = "Trait"
+
+        raw_target_method = result.get("target_method")
+        target_method: Optional[str] = str(raw_target_method) if raw_target_method else None
+
+        raw_constraints = result.get("constraints", [])
+        constraints: list[str] = (
+            [str(c) for c in raw_constraints]
+            if isinstance(raw_constraints, list)
+            else []
+        )
+
+        expected_outcome = str(result.get("expected_outcome", ""))
+
+        # Create evolution plan (target_class stores trait name for Coder)
         plan = EvolutionPlan(
             plan_id=f"plan_{uuid.uuid4().hex[:8]}",
             trigger_id=trigger.trigger_id,
-            action_type=result.get("action_type", "new_trait"),
+            action_type=action_type,
             description=result["description"],
             target_class=result.get("trait_name"),
+            target_method=target_method,
+            cycle_id=cycle_id,
+            arch_target_class=arch_target_class,
+            expected_outcome=expected_outcome,
+            constraints=constraints,
         )
 
         return plan

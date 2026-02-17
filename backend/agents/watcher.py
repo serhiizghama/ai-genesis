@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 from redis.asyncio import Redis
@@ -126,6 +126,7 @@ class WatcherAgent:
         self._settings = settings
         self._last_trigger_time: Optional[float] = None
         self._running = False
+        self._prev_snapshot: Optional[WorldSnapshot] = None
 
     async def run(self) -> None:
         """Start the watcher agent loop.
@@ -153,7 +154,7 @@ class WatcherAgent:
         self._running = False
         logger.info("watcher_agent_stopping")
 
-    async def _handle_telemetry(self, data: dict[str, Any]) -> None:
+    async def _handle_telemetry(self, data: dict[str, object]) -> None:
         """Handle incoming telemetry event.
 
         Args:
@@ -161,8 +162,8 @@ class WatcherAgent:
                   {tick: int, snapshot_key: str, timestamp: float}
         """
         try:
-            tick = data["tick"]
-            snapshot_key = data["snapshot_key"]
+            tick = int(data["tick"])
+            snapshot_key = str(data["snapshot_key"])
 
             logger.debug("telemetry_received", tick=tick, snapshot_key=snapshot_key)
 
@@ -183,20 +184,25 @@ class WatcherAgent:
                     tick=tick,
                 )
 
+                # Generate one cycle_id for the entire detection event
+                cycle_id = f"evo_{uuid.uuid4().hex[:12]}"
+
                 # Publish feed messages for each anomaly (T-040)
                 for anomaly in anomalies:
-                    await self._publish_feed_message(anomaly, snapshot)
+                    await self._publish_feed_message(anomaly, snapshot, cycle_id)
 
                 # Check cooldown before triggering evolution
                 if self._can_trigger_evolution():
                     # Publish evolution trigger (only the most severe one)
                     most_severe = self._get_most_severe(anomalies)
+                    most_severe.cycle_id = cycle_id
                     await self._bus.publish(Channels.EVOLUTION_TRIGGER, most_severe)
                     self._last_trigger_time = time.time()
 
                     logger.info(
                         "evolution_triggered",
                         trigger_id=most_severe.trigger_id,
+                        cycle_id=cycle_id,
                         problem_type=most_severe.problem_type,
                         severity=most_severe.severity,
                     )
@@ -206,6 +212,9 @@ class WatcherAgent:
                         "evolution_on_cooldown",
                         cooldown_remaining_sec=round(cooldown_remaining, 1),
                     )
+
+            # Track snapshot for next diff computation
+            self._prev_snapshot = snapshot
 
         except Exception as exc:
             logger.error(
@@ -242,12 +251,14 @@ class WatcherAgent:
         self,
         anomaly: EvolutionTrigger,
         snapshot: WorldSnapshot,
+        cycle_id: str,
     ) -> None:
         """Publish a feed message for UI display.
 
         Args:
             anomaly: The detected anomaly
             snapshot: The world snapshot
+            cycle_id: Evolution cycle ID shared across all agents in this cycle
         """
         # Create human-readable message based on anomaly type
         if anomaly.problem_type == "starvation":
@@ -259,15 +270,32 @@ class WatcherAgent:
         else:
             message = f"⚠️ Обнаружена аномалия: {anomaly.problem_type}"
 
+        metadata: dict[str, object] = {
+            "cycle_id": cycle_id,
+            "trigger": {
+                "problem_type": anomaly.problem_type,
+                "severity": anomaly.severity,
+            },
+            "snapshot": {
+                "tick": snapshot.tick,
+                "entity_count": snapshot.entity_count,
+                "avg_energy": snapshot.avg_energy,
+            },
+        }
+
+        if self._prev_snapshot is not None:
+            metadata["stats_diff"] = {
+                "entity_count_before": self._prev_snapshot.entity_count,
+                "entity_count_now": snapshot.entity_count,
+                "avg_energy_before": self._prev_snapshot.avg_energy,
+                "avg_energy_now": snapshot.avg_energy,
+            }
+
         feed_msg = FeedMessage(
             agent="watcher",
             action=f"anomaly_detected_{anomaly.problem_type}",
             message=message,
-            metadata={
-                "trigger_id": anomaly.trigger_id,
-                "severity": anomaly.severity,
-                "tick": snapshot.tick,
-            },
+            metadata=metadata,
         )
 
         await self._bus.publish(Channels.FEED, feed_msg)

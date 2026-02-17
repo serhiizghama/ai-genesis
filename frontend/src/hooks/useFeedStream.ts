@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useWorldStore } from '../store/worldStore';
+import type { FeedMetadata } from '../types/feed';
 
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const WS_FEED_URL = `${wsProtocol}//${window.location.host}/api/ws/feed`;
@@ -7,8 +8,14 @@ const RECONNECT_DELAY_MS = 2000;
 
 interface FeedPayload {
   readonly agent: string;
+  readonly action: string;
   readonly message: string;
+  readonly metadata?: FeedMetadata;
   readonly timestamp: number;
+}
+
+function isFeedMetadata(value: unknown): value is FeedMetadata {
+  return typeof value === 'object' && value !== null;
 }
 
 function isFeedPayload(data: unknown): data is FeedPayload {
@@ -24,7 +31,7 @@ function isFeedPayload(data: unknown): data is FeedPayload {
 /**
  * Hook that connects to the Evolution Feed WebSocket and adds messages to the world store.
  *
- * Listens for JSON messages: {agent, message, timestamp}
+ * Listens for JSON messages: {agent, action, message, metadata, timestamp}
  * Dispatches them to useWorldStore.addFeedMessage with auto-incrementing id.
  * Handles reconnect on disconnect.
  */
@@ -57,7 +64,9 @@ export function useFeedStream(): void {
           useWorldStore.getState().addFeedMessage({
             id: msgIdRef.current,
             agent: parsed.agent,
-            text: parsed.message,
+            action: parsed.action,
+            message: parsed.message,
+            metadata: isFeedMetadata(parsed.metadata) ? parsed.metadata : undefined,
             timestamp: parsed.timestamp,
           });
         } catch (err) {

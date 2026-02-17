@@ -369,6 +369,7 @@ class EntityDetailResponse(BaseModel):
     state: str
     traits: list[str] = Field(..., description="Active trait class names")
     deactivated_traits: list[str]
+    evolution_count: int = Field(..., description="Number of mutations applied to this entity")
 
 
 @router.get("/entities/{entity_id}", response_model=EntityDetailResponse)
@@ -396,7 +397,18 @@ async def get_entity(entity_id: int, request: Request) -> EntityDetailResponse:
         state=entity.state,
         traits=trait_names,
         deactivated_traits=list(entity.deactivated_traits),
+        evolution_count=len(entity.traits),
     )
+
+
+@router.get("/mutations/source/{trait_name}")
+async def get_trait_source(trait_name: str, request: Request) -> dict[str, str]:
+    """Get the LLM-generated source code for a registered trait by name."""
+    engine = request.app.state.app_state.engine
+    source = engine.registry.get_source(trait_name)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Source not found for trait '{trait_name}'")
+    return {"trait_name": trait_name, "source": source}
 
 
 @router.post("/entities/{entity_id}/kill")

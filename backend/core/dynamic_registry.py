@@ -28,6 +28,7 @@ class DynamicRegistry:
     def __init__(self) -> None:
         """Initialize an empty registry."""
         self._traits: dict[str, Type[BaseTrait]] = {}
+        self._sources: dict[str, str] = {}  # trait_name -> source code
         self._usage_counter: Counter[str] = Counter()
 
     def register(self, name: str, cls: Type[BaseTrait]) -> None:
@@ -48,6 +49,26 @@ class DynamicRegistry:
         self._traits = new_traits
 
         logger.info("trait_registered", trait_name=name, class_name=cls.__name__)
+
+    def register_source(self, name: str, source_code: str) -> None:
+        """Store the source code for a registered trait.
+
+        Args:
+            name: Trait name (same key used in register()).
+            source_code: Full Python source code of the trait.
+        """
+        self._sources[name] = source_code
+
+    def get_source(self, name: str) -> Optional[str]:
+        """Get the source code for a registered trait.
+
+        Args:
+            name: Trait name.
+
+        Returns:
+            Source code string, or None if not found.
+        """
+        return self._sources.get(name)
 
     def unregister(self, name: str) -> bool:
         """Remove a trait from the registry.

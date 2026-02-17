@@ -86,6 +86,9 @@ class CoreEngine:
         self.death_stats: dict[str, int] = {}
         self.last_snapshot_tick = 0
 
+        # Track registry version to detect new mutations and apply them to living entities
+        self._known_registry_version = 0
+
     async def run(self) -> None:
         """Main simulation loop.
 
@@ -119,6 +122,14 @@ class CoreEngine:
 
                 # T-019: Lifecycle management
                 self._handle_deaths()
+
+                # Apply any new mutations from registry to all living entities
+                self._apply_new_registry_traits()
+
+                # T-029: Broadcast BEFORE respawning so clients see real population dips
+                if self.ws_manager and self.tick_counter % 2 == 0:
+                    await self._broadcast_world_state()
+
                 await self._handle_spawning()
                 self._respawn_resources()
 
@@ -129,10 +140,6 @@ class CoreEngine:
                 # T-036/T-037: Telemetry snapshot collection
                 if self.tick_counter % self.settings.snapshot_interval_ticks == 0:
                     await self._collect_and_send_telemetry()
-
-                # T-029: Broadcast world state every 2 ticks (30 FPS)
-                if self.ws_manager and self.tick_counter % 2 == 0:
-                    await self._broadcast_world_state()
 
             except Exception as exc:
                 # Never let the simulation loop crash
@@ -224,54 +231,70 @@ class CoreEngine:
                 count=len(dead_entities),
             )
 
-    async def _handle_spawning(self) -> None:
-        """Spawn new entities if population is below minimum.
+    # Max entities to spawn per tick — limits refill rate so population dips
+    # are visible in the graph rather than being instantly hidden.
+    _SPAWN_BATCH_SIZE = 2
 
-        Uses DynamicRegistry.get_snapshot() to get available traits
-        for new entities.
+    async def _handle_spawning(self) -> None:
+        """Spawn new entities based on population floor and organic growth.
+
+        - Below min_population: always refill (up to _SPAWN_BATCH_SIZE per tick)
+        - Above min_population: grow organically when avg energy is high
+          (simulates reproduction driven by resource availability)
         """
         current_count = self.entity_manager.count_alive()
 
+        # Calculate avg energy to drive organic growth
+        alive = self.entity_manager.alive()
+        avg_energy_pct = 0.0
+        if alive:
+            avg_energy_pct = sum(e.energy / e.max_energy for e in alive) / len(alive) * 100
+
+        # How many to spawn this tick
+        to_spawn = 0
+
         if current_count < self.settings.min_population:
-            needed = self.settings.min_population - current_count
-            spawned = 0
+            # Floor maintenance: refill up to batch size
+            to_spawn = min(self.settings.min_population - current_count, self._SPAWN_BATCH_SIZE)
+        elif current_count < self.settings.max_entities:
+            # Organic growth: spawn when entities are thriving
+            # avg_energy > 70% → 1 extra, avg_energy > 85% → 2 extra
+            if avg_energy_pct >= 85:
+                to_spawn = 2
+            elif avg_energy_pct >= 70:
+                to_spawn = 1
 
-            for _ in range(needed):
-                # Don't exceed max entities
-                if self.entity_manager.count_alive() >= self.settings.max_entities:
-                    break
+        spawned = 0
+        trait_snapshot = self.registry.get_snapshot()
+        generation = self.tick_counter // 75
 
-                # Spawn entity at random position
-                x = random.uniform(0, self.settings.world_width)
-                y = random.uniform(0, self.settings.world_height)
+        for _ in range(to_spawn):
+            if self.entity_manager.count_alive() >= self.settings.max_entities:
+                break
 
-                # Get available traits from registry
-                trait_snapshot = self.registry.get_snapshot()
-                traits = []
+            x = random.uniform(0, self.settings.world_width)
+            y = random.uniform(0, self.settings.world_height)
+            traits = [cls() for cls in trait_snapshot.values()]
 
-                # For MVP: spawn entities with no traits
-                # In future phases, entities will be spawned with random traits
-                # from the registry or inherited from parents
-                if trait_snapshot:
-                    # Could add logic to randomly select traits here
-                    pass
+            self.entity_manager.spawn(
+                x=x,
+                y=y,
+                traits=traits,
+                generation=generation,
+                tick=self.tick_counter,
+            )
+            spawned += 1
 
-                self.entity_manager.spawn(
-                    x=x,
-                    y=y,
-                    traits=traits,
-                    generation=0,
-                    tick=self.tick_counter,
-                )
-                spawned += 1
-
-            if spawned > 0:
-                logger.info(
-                    "entities_spawned",
-                    tick=self.tick_counter,
-                    count=spawned,
-                    reason="min_population",
-                )
+        if spawned > 0:
+            reason = "min_population" if current_count < self.settings.min_population else "organic_growth"
+            logger.info(
+                "entities_spawned",
+                tick=self.tick_counter,
+                count=spawned,
+                total=self.entity_manager.count_alive(),
+                avg_energy_pct=round(avg_energy_pct, 1),
+                reason=reason,
+            )
 
     def _respawn_resources(self) -> None:
         """Respawn resources in the environment.
@@ -366,6 +389,45 @@ class CoreEngine:
             death_stats=snapshot.death_stats,
         )
 
+    def _apply_new_registry_traits(self) -> None:
+        """Apply any newly registered traits to all living entities.
+
+        Compares current registry version to the last known version.
+        If new traits were registered since last tick, gives all living
+        entities an instance of each new trait (if they don't have it).
+        """
+        current_version = self.registry.unique_trait_count()
+        if current_version <= self._known_registry_version:
+            return
+
+        # New traits have been registered — find which ones are new
+        trait_snapshot = self.registry.get_snapshot()
+        for entity in self.entity_manager.alive():
+            existing_trait_names = {t.__class__.__name__ for t in entity.traits}
+            for trait_name, trait_cls in trait_snapshot.items():
+                if trait_name not in existing_trait_names:
+                    try:
+                        entity.traits.append(trait_cls())
+                        logger.info(
+                            "trait_applied_to_entity",
+                            entity_id=entity.id,
+                            trait_name=trait_name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "trait_apply_failed",
+                            entity_id=entity.id,
+                            trait_name=trait_name,
+                            error=str(exc),
+                        )
+
+        self._known_registry_version = current_version
+        logger.info(
+            "registry_traits_applied_to_population",
+            registry_version=current_version,
+            entity_count=self.entity_manager.count_alive(),
+        )
+
     async def _spawn_initial_population(self) -> None:
         """Spawn initial population at simulation start."""
         logger.info(
@@ -377,12 +439,17 @@ class CoreEngine:
             x = random.uniform(0, self.settings.world_width)
             y = random.uniform(0, self.settings.world_height)
 
+            # Randomize starting energy so entities don't all die at the same tick.
+            # This staggers deaths and makes the population graph show real movement.
+            initial_energy = random.uniform(50.0, 100.0)
+
             self.entity_manager.spawn(
                 x=x,
                 y=y,
                 traits=[],
                 generation=0,
                 tick=self.tick_counter,
+                initial_energy=initial_energy,
             )
 
     async def _broadcast_world_state(self) -> None:

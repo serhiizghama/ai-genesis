@@ -39,6 +39,8 @@ services:
     environment:
       - GENESIS_REDIS_URL=redis://redis:6379/0
       - GENESIS_OLLAMA_URL=http://ollama:11434
+      - GENESIS_OLLAMA_MODEL=qwen2.5:3b
+      - GENESIS_LLM_TIMEOUT_SEC=300
     depends_on:
       redis:
         condition: service_healthy

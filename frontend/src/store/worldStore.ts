@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import type { EntityState } from '../hooks/useWorldStream';
+import type { FeedMessage } from '../types/feed';
 
-export interface FeedMessage {
-  readonly id: number;
-  readonly agent: string;
-  readonly text: string;
-  readonly timestamp: number;
+export type { FeedMessage };
+
+interface StatsSnapshot {
+  avgEnergy: number;
+  resourceCount: number;
+  tps: number;
 }
 
 interface WorldStore {
@@ -15,11 +17,13 @@ interface WorldStore {
   isConnected: boolean;
   feedMessages: FeedMessage[];
   selectedEntityId: number | null;
+  stats: StatsSnapshot;
 
   setWorldState: (tick: number, entities: readonly EntityState[]) => void;
   addFeedMessage: (msg: FeedMessage) => void;
   selectEntity: (id: number | null) => void;
   setConnected: (isConnected: boolean) => void;
+  setStats: (s: StatsSnapshot) => void;
 }
 
 export const useWorldStore = create<WorldStore>((set) => ({
@@ -29,6 +33,7 @@ export const useWorldStore = create<WorldStore>((set) => ({
   isConnected: false,
   feedMessages: [],
   selectedEntityId: null,
+  stats: { avgEnergy: 0, resourceCount: 0, tps: 0 },
 
   setWorldState: (tick, entities) => set({ tick, entities, entityCount: entities.length }),
 
@@ -40,4 +45,6 @@ export const useWorldStore = create<WorldStore>((set) => ({
   selectEntity: (id) => set({ selectedEntityId: id }),
 
   setConnected: (isConnected) => set({ isConnected }),
+
+  setStats: (stats) => set({ stats }),
 }));

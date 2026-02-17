@@ -145,7 +145,17 @@ class CodeValidator:
                 code_hash=code_hash,
             )
 
-        # Level 4: Trait contract validation
+        # Level 4: Module reference check (catches e.g. @dataclasses.dataclass without import)
+        ref_error = self._check_undefined_module_refs(tree)
+        if ref_error:
+            logger.warning("validation_failed_undefined_ref", error=ref_error)
+            return ValidationResult(
+                is_valid=False,
+                error=ref_error,
+                code_hash=code_hash,
+            )
+
+        # Level 5: Trait contract validation
         trait_class_name = self._check_trait_contract(tree)
         if not trait_class_name:
             error = "No valid Trait class found (must inherit from BaseTrait/Trait and have async execute(self, entity) method)"
@@ -156,7 +166,7 @@ class CodeValidator:
                 code_hash=code_hash,
             )
 
-        # Level 5: Deduplication check (if Redis available)
+        # Level 6: Deduplication check (if Redis available)
         if self._redis:
             is_duplicate = await self._check_duplicate(code_hash)
             if is_duplicate:
@@ -258,6 +268,42 @@ class CodeValidator:
             return node.attr
         else:
             return ""
+
+    def _check_undefined_module_refs(self, tree: ast.AST) -> Optional[str]:
+        """Check for module names used via attribute access without being imported.
+
+        Catches patterns like @dataclasses.dataclass when 'import dataclasses'
+        is missing.
+
+        Args:
+            tree: AST of the source code
+
+        Returns:
+            Error message if undefined module reference found, None otherwise
+        """
+        # Collect all imported top-level names
+        imported_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name.split(".")[0]
+                    imported_names.add(name)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    imported_names.add(name)
+
+        # Check for known module names used as attribute prefixes without import
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                ref_name = node.value.id
+                if ref_name in ALLOWED_IMPORTS and ref_name not in imported_names:
+                    return (
+                        f"Used '{ref_name}.{node.attr}' but '{ref_name}' is not imported. "
+                        f"Add 'import {ref_name}' at the top."
+                    )
+
+        return None
 
     def _check_trait_contract(self, tree: ast.AST) -> Optional[str]:
         """Verify that code contains a valid Trait class.

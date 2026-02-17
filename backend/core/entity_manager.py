@@ -46,6 +46,7 @@ class EntityManager:
         parent: Optional[BaseEntity] = None,
         generation: int = 0,
         tick: int = 0,
+        initial_energy: float = 100.0,
     ) -> BaseEntity:
         """Spawn a new entity in the simulation.
 
@@ -56,6 +57,7 @@ class EntityManager:
             parent: Optional parent entity (for reproduction).
             generation: Generation number (0 for first generation).
             tick: Current simulation tick (for born_at_tick).
+            initial_energy: Starting energy level (default 100.0).
 
         Returns:
             The newly created entity.
@@ -75,7 +77,7 @@ class EntityManager:
             id=entity_id,
             x=x,
             y=y,
-            energy=100.0,
+            energy=initial_energy,
             max_energy=100.0,
             radius=10.0,
             color=color,

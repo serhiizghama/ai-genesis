@@ -34,6 +34,7 @@ from backend.core.entity_manager import EntityManager
 from backend.core.environment import Environment
 from backend.core.world_physics import WorldPhysics
 from backend.sandbox import CodeValidator, RuntimePatcher
+from backend.sandbox.mutations_registry import MutationRegistry
 
 # Configure structured logging
 structlog.configure(
@@ -180,12 +181,16 @@ class SimulationRunner:
         )
         logger.info("architect_agent_initialized")
 
+        # Create MutationRegistry for persisting generated mutations to Redis
+        mutation_registry = MutationRegistry(redis=redis) if redis is not None else None  # type: ignore
+
         # Create Coder Agent (T-057)
         self.coder = CoderAgent(
             event_bus=event_bus,
             llm_client=llm_client,
             validator=validator,
             settings=settings,
+            mutation_registry=mutation_registry,
         )
         logger.info("coder_agent_initialized")
 
@@ -193,7 +198,9 @@ class SimulationRunner:
         async def _on_feed_event(event: FeedEvent) -> None:
             await feed_ws_manager.broadcast_json({
                 "agent": event.agent,
+                "action": event.action,
                 "message": event.message,
+                "metadata": event.metadata,
                 "timestamp": event.timestamp,
             })
 

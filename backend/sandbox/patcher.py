@@ -16,7 +16,7 @@ import structlog
 
 from backend.bus.channels import Channels
 from backend.bus.event_bus import EventBus
-from backend.bus.events import MutationApplied, MutationFailed, MutationReady
+from backend.bus.events import FeedMessage, MutationApplied, MutationFailed, MutationReady
 from backend.core.dynamic_registry import DynamicRegistry
 from backend.core.traits import BaseTrait
 from backend.sandbox.validator import CodeValidator, ValidationResult
@@ -66,20 +66,22 @@ class RuntimePatcher:
         await self._event_bus.subscribe(Channels.MUTATION_READY, self._handle_mutation_ready)
         logger.info("runtime_patcher_listening", channel=Channels.MUTATION_READY)
 
-    async def _handle_mutation_ready(self, event_data: dict) -> None:
+    async def _handle_mutation_ready(self, event_data: dict[str, object]) -> None:
         """Handle incoming MutationReady event.
 
         Args:
             event_data: Deserialized MutationReady event data
         """
-        mutation_id = event_data.get("mutation_id", "unknown")
-        file_path = event_data.get("file_path", "")
-        trait_name = event_data.get("trait_name", "")
-        version = event_data.get("version", 0)
+        mutation_id = str(event_data.get("mutation_id", "unknown"))
+        file_path = str(event_data.get("file_path", ""))
+        trait_name = str(event_data.get("trait_name", ""))
+        version = int(event_data.get("version", 0))
+        cycle_id = str(event_data.get("cycle_id", ""))
 
         logger.info(
             "mutation_ready_received",
             mutation_id=mutation_id,
+            cycle_id=cycle_id,
             file_path=file_path,
             trait_name=trait_name,
             version=version,
@@ -90,6 +92,14 @@ class RuntimePatcher:
             validation_result = await self._validate_mutation(file_path)
             if not validation_result:
                 # Validation failed, _validate_mutation already published MutationFailed
+                await self._publish_feed_failure(
+                    mutation_id=mutation_id,
+                    trait_name=trait_name,
+                    version=version,
+                    cycle_id=cycle_id,
+                    error="Validation failed",
+                    rollback_to=None,
+                )
                 return
         except Exception as exc:
             logger.error(
@@ -103,6 +113,14 @@ class RuntimePatcher:
                 error=f"Validation exception: {exc}",
                 stage="validation",
             )
+            await self._publish_feed_failure(
+                mutation_id=mutation_id,
+                trait_name=trait_name,
+                version=version,
+                cycle_id=cycle_id,
+                error=f"Validation exception: {exc}",
+                rollback_to=None,
+            )
             return
 
         # Step 2: Load the module
@@ -110,6 +128,14 @@ class RuntimePatcher:
             trait_class = self._load_module(file_path, validation_result.trait_class_name)
             if not trait_class:
                 # Loading failed, _load_module already published MutationFailed
+                await self._publish_feed_failure(
+                    mutation_id=mutation_id,
+                    trait_name=trait_name,
+                    version=version,
+                    cycle_id=cycle_id,
+                    error="Module load failed",
+                    rollback_to=None,
+                )
                 return
         except Exception as exc:
             logger.error(
@@ -124,12 +150,24 @@ class RuntimePatcher:
                 error=f"Module load exception: {exc}",
                 stage="import",
             )
+            await self._publish_feed_failure(
+                mutation_id=mutation_id,
+                trait_name=trait_name,
+                version=version,
+                cycle_id=cycle_id,
+                error=f"Module load exception: {exc}",
+                rollback_to=None,
+            )
             return
 
         # Step 3: Register the trait class
         try:
             self._registry.register(trait_name, trait_class)
             self._registry_version += 1
+
+            # Store source code in registry so the API can serve it
+            source_code = Path(file_path).read_text()
+            self._registry.register_source(trait_name, source_code)
 
             # Mark the mutation as used in validator to prevent duplicates
             if validation_result.code_hash:
@@ -138,12 +176,13 @@ class RuntimePatcher:
             logger.info(
                 "mutation_applied_success",
                 mutation_id=mutation_id,
+                cycle_id=cycle_id,
                 trait_name=trait_name,
                 version=version,
                 registry_version=self._registry_version,
             )
 
-            # Publish success event
+            # Publish typed success event
             await self._event_bus.publish(
                 Channels.MUTATION_APPLIED,
                 MutationApplied(
@@ -151,6 +190,28 @@ class RuntimePatcher:
                     trait_name=trait_name,
                     version=version,
                     registry_version=self._registry_version,
+                ),
+            )
+
+            # Publish success feed message per spec section 2.2
+            await self._event_bus.publish(
+                Channels.FEED,
+                FeedMessage(
+                    agent="patcher",
+                    action="mutation_applied",
+                    message=f"Мутация {trait_name} v{version} успешно применена",
+                    metadata={
+                        "cycle_id": cycle_id,
+                        "mutation": {
+                            "mutation_id": mutation_id,
+                            "trait_name": trait_name,
+                            "version": version,
+                        },
+                        "registry": {
+                            "registry_version": self._registry_version,
+                            "rollback_to": None,
+                        },
+                    },
                 ),
             )
 
@@ -166,6 +227,14 @@ class RuntimePatcher:
                 mutation_id=mutation_id,
                 error=f"Registration exception: {exc}",
                 stage="execution",
+            )
+            await self._publish_feed_failure(
+                mutation_id=mutation_id,
+                trait_name=trait_name,
+                version=version,
+                cycle_id=cycle_id,
+                error=f"Registration exception: {exc}",
+                rollback_to=None,
             )
 
     async def _validate_mutation(self, file_path: str) -> Optional[ValidationResult]:
@@ -296,6 +365,48 @@ class RuntimePatcher:
             )
             # Return None - registry not updated (rollback)
             return None
+
+    async def _publish_feed_failure(
+        self,
+        mutation_id: str,
+        trait_name: str,
+        version: int,
+        cycle_id: str,
+        error: str,
+        rollback_to: Optional[str],
+    ) -> None:
+        """Publish a failure FeedMessage with spec-compliant metadata.
+
+        Args:
+            mutation_id: ID of the failed mutation.
+            trait_name: Trait name (may be empty if unavailable).
+            version: Trait version number.
+            cycle_id: Evolution cycle ID.
+            error: Human-readable error description.
+            rollback_to: Optional mutation_id rolled back to, or None.
+        """
+        label = f"{trait_name} v{version}" if trait_name else mutation_id
+        await self._event_bus.publish(
+            Channels.FEED,
+            FeedMessage(
+                agent="patcher",
+                action="mutation_failed",
+                message=f"Ошибка при применении мутации {label}",
+                metadata={
+                    "cycle_id": cycle_id,
+                    "mutation": {
+                        "mutation_id": mutation_id,
+                        "trait_name": trait_name,
+                        "version": version,
+                    },
+                    "registry": {
+                        "registry_version": self._registry_version,
+                        "rollback_to": rollback_to,
+                    },
+                    "error": error,
+                },
+            ),
+        )
 
     async def _publish_failure(
         self,
