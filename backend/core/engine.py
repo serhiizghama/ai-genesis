@@ -609,7 +609,7 @@ class CoreEngine:
 
         # Each predator hunts the nearest molbot
         for predator in predators:
-            nearby = self.entity_manager.nearby_entities(predator.x, predator.y, 300.0)
+            nearby = self.entity_manager.nearby_entities(predator.x, predator.y, 200.0)
             targets = [e for e in nearby if e.entity_type == "molbot" and e.is_alive()]
 
             if not targets:
@@ -627,11 +627,11 @@ class CoreEngine:
 
             if dist > 0:
                 # Move toward target (capped by _MAX_MOVE_PER_TICK inside move())
-                speed = 50.0
+                speed = 20.0
                 predator.move(dx / dist * speed, dy / dist * speed)
 
             # Kill on contact
-            if dist < (predator.radius + target.radius + 5):
+            if dist < (predator.radius + target.radius):
                 target.state = "dead"
                 predator.energy = min(predator.energy + 80.0, predator.max_energy)
                 self._predator_kill_count += 1

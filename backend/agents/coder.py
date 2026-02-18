@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
-from backend.agents.entity_api import ENTITY_API_TEXT
+from backend.agents.entity_api import ALLOWED_ENTITY_ATTRS, ENTITY_API_TEXT
 from backend.agents.llm_client import LLMClient, extract_code_block
 from backend.bus.channels import Channels
 from backend.bus.events import EvolutionPlan, FeedMessage, MutationReady
@@ -361,10 +361,35 @@ CRITICAL RULES:
         # Prefix the prompt with the previous error if this is a retry
         retry_prefix = ""
         if previous_error:
-            retry_prefix = (
-                f"PREVIOUS ATTEMPT FAILED VALIDATION: {previous_error}\n"
-                "Fix the issue and try again. Do NOT use forbidden imports (e.g. os, sys, subprocess).\n\n"
-            )
+            if "Forbidden entity attribute" in previous_error:
+                allowed = ", ".join(sorted(ALLOWED_ENTITY_ATTRS))
+                retry_prefix = (
+                    f"PREVIOUS ATTEMPT FAILED: {previous_error}\n"
+                    f"You used an attribute that does NOT exist on the entity object. "
+                    f"ONLY use these: {allowed}\n"
+                    "Do NOT invent new attributes. If you need custom state, store it in entity.traits.\n\n"
+                )
+            elif "Forbidden import" in previous_error or "import" in previous_error.lower():
+                retry_prefix = (
+                    f"PREVIOUS ATTEMPT FAILED: {previous_error}\n"
+                    "Only allowed imports: math, random, typing, dataclasses, enum, collections.\n\n"
+                )
+            elif "await entity." in previous_error or "synchronous" in previous_error:
+                retry_prefix = (
+                    f"PREVIOUS ATTEMPT FAILED: {previous_error}\n"
+                    "Entity methods (move, eat_nearby, attack_nearby, is_alive, etc.) are SYNCHRONOUS. "
+                    "Call them WITHOUT await: entity.eat_nearby(), entity.move(dx, dy)\n\n"
+                )
+            elif "Forbidden call" in previous_error:
+                retry_prefix = (
+                    f"PREVIOUS ATTEMPT FAILED: {previous_error}\n"
+                    "Do NOT use eval, exec, open, print, globals, locals or any system calls.\n\n"
+                )
+            else:
+                retry_prefix = (
+                    f"PREVIOUS ATTEMPT FAILED: {previous_error}\n"
+                    "Fix the issue and try again.\n\n"
+                )
 
         # Prepend world context if available
         world_prefix = ""
@@ -408,7 +433,7 @@ class {trait_name}(BaseTrait):
 
     async def execute(self, entity) -> None:
         # entity has: id, x, y, energy, max_energy, age, traits, state (str)
-        # To gain energy: entity.eat_nearby(radius=50.0) -> bool
+        # To gain energy: entity.eat_nearby(radius=30.0) -> bool
         # To move: entity.move(dx, dy)
         pass
 ```

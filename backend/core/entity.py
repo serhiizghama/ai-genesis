@@ -95,7 +95,7 @@ class BaseEntity:
 
     # Maximum displacement allowed per tick — prevents LLM-generated traits from
     # teleporting entities across the world by passing absolute coords as deltas.
-    _MAX_MOVE_PER_TICK: float = 50.0
+    _MAX_MOVE_PER_TICK: float = 20.0
 
     def move(self, dx: float, dy: float) -> None:
         """Move the entity by a delta vector, clamped to _MAX_MOVE_PER_TICK.
@@ -127,7 +127,7 @@ class BaseEntity:
         """
         self.energy = min(self.energy + amount, self.max_energy)
 
-    def eat_nearby(self, radius: float = 50.0) -> bool:
+    def eat_nearby(self, radius: float = 30.0) -> bool:
         """Consume the nearest real resource within radius.
 
         This is the correct way for traits to gain energy — it actually
@@ -135,7 +135,7 @@ class BaseEntity:
         or environment is not available.
 
         Args:
-            radius: Search radius in world pixels (default 50).
+            radius: Search radius in world pixels (default 30).
 
         Returns:
             True if a resource was found and consumed, False otherwise.

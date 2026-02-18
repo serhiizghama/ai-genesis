@@ -1,4 +1,21 @@
-"""Shared Entity API documentation for LLM agent prompts."""
+"""Shared Entity API documentation for LLM agent prompts.
+
+This module is the single source of truth for what LLM-generated traits
+can access. Both the validator (sandbox/validator.py) and agent prompts
+(architect.py, coder.py) import from here to stay in sync.
+"""
+
+# Single source of truth: attributes and methods LLM-generated traits may access.
+# validator.py imports this set — do NOT define allowed attrs there separately.
+ALLOWED_ENTITY_ATTRS = {
+    # Read-only fields
+    "id", "x", "y", "energy", "max_energy",
+    "age", "max_age", "metabolism_rate",
+    "traits", "state", "entity_type",
+    # Methods safe for trait use
+    "move", "eat_nearby", "attack_nearby",
+    "is_alive", "deactivate_trait", "activate_trait",
+}
 
 ENTITY_API_TEXT = """Entity attributes:
 - id: str — unique identifier
@@ -13,8 +30,8 @@ ENTITY_API_TEXT = """Entity attributes:
 - entity_type: str — "molbot" or "predator"
 
 Entity methods:
-- move(dx, dy) — move by delta; max 50px/tick
-- eat_nearby(radius=50.0) -> bool — consume nearest food; ONLY way to gain energy
+- move(dx, dy) — move by delta; max 20px/tick
+- eat_nearby(radius=30.0) -> bool — consume nearest food; ONLY way to gain energy
 - attack_nearby(radius=30.0, damage=20.0) -> bool — attack nearest predator within radius
 - is_alive() -> bool — True if state == "alive"
 - deactivate_trait(trait_name: str) / activate_trait(trait_name: str) — manage trait state by name

@@ -14,6 +14,8 @@ from typing import Optional
 import structlog
 from redis.asyncio import Redis
 
+from backend.agents.entity_api import ALLOWED_ENTITY_ATTRS  # single source of truth
+
 logger = structlog.get_logger()
 
 # Whitelist of allowed imports for mutations
@@ -46,10 +48,18 @@ BANNED_CALLS = {
     "print",  # Prevent spam, use logger instead
 }
 
-# Whitelist of allowed attribute accesses on the 'entity' object
-ALLOWED_ENTITY_ATTRS = {
-    "id", "x", "y", "energy", "max_energy", "age",
-    "traits", "state", "eat_nearby", "move",
+
+# Python builtins available without import — used by unbound-name check
+_PYTHON_BUILTINS = {
+    "True", "False", "None",
+    "int", "float", "str", "bool", "list", "dict", "set", "tuple", "bytes",
+    "range", "len", "min", "max", "abs", "round", "sum", "any", "all",
+    "zip", "enumerate", "isinstance", "issubclass", "type", "id",
+    "sorted", "reversed", "filter", "map", "iter", "next",
+    "hasattr", "getattr", "setattr", "delattr", "callable",
+    "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+    "AttributeError", "RuntimeError", "StopIteration", "NotImplementedError",
+    "__name__", "__class__", "__doc__",
 }
 
 # Banned attribute accesses (dunders that could expose internals)
@@ -188,6 +198,16 @@ class CodeValidator:
             return ValidationResult(
                 is_valid=False,
                 error=init_sig_error,
+                code_hash=code_hash,
+            )
+
+        # Level 5c: Await on sync entity methods
+        await_error = self._check_await_on_entity_methods(tree)
+        if await_error:
+            logger.warning("validation_failed_await_entity", error=await_error)
+            return ValidationResult(
+                is_valid=False,
+                error=await_error,
                 code_hash=code_hash,
             )
 
@@ -405,8 +425,6 @@ class CodeValidator:
                         all_assigned.add(n.id)
 
                 potentially_unbound = all_assigned - definite
-                if not potentially_unbound:
-                    continue
 
                 # Check top-level statements (skip conditional/loop bodies)
                 # for Loads of potentially_unbound names
@@ -414,20 +432,45 @@ class CodeValidator:
                     ast.If, ast.For, ast.AsyncFor, ast.While,
                     ast.Try, ast.With, ast.AsyncWith,
                 )
-                for stmt in method.body:
-                    if isinstance(stmt, _CONDITIONAL_STMTS):
-                        continue
-                    for n in ast.walk(stmt):
-                        if (
-                            isinstance(n, ast.Name)
-                            and isinstance(n.ctx, ast.Load)
-                            and n.id in potentially_unbound
-                        ):
-                            return (
-                                f"Potentially unbound variable '{n.id}' in execute(): "
-                                f"assigned only inside a conditional/loop block "
-                                f"but used unconditionally (UnboundLocalError risk)"
-                            )
+                if potentially_unbound:
+                    for stmt in method.body:
+                        if isinstance(stmt, _CONDITIONAL_STMTS):
+                            continue
+                        for n in ast.walk(stmt):
+                            if (
+                                isinstance(n, ast.Name)
+                                and isinstance(n.ctx, ast.Load)
+                                and n.id in potentially_unbound
+                            ):
+                                return (
+                                    f"Potentially unbound variable '{n.id}' in execute(): "
+                                    f"assigned only inside a conditional/loop block "
+                                    f"but used unconditionally (UnboundLocalError risk)"
+                                )
+
+                # Check for names used anywhere in execute() but NEVER defined
+                # (not assigned, not an arg, not a builtin, not a module-level name)
+                module_names: set[str] = set()
+                for top in tree.body:  # type: ignore[attr-defined]
+                    if isinstance(top, (ast.Import, ast.ImportFrom)):
+                        for alias in top.names:
+                            module_names.add(alias.asname or alias.name.split(".")[0])
+                    elif isinstance(top, ast.ClassDef):
+                        module_names.add(top.name)
+
+                func_args = {arg.arg for arg in method.args.args}
+                allowed = all_assigned | func_args | module_names | _PYTHON_BUILTINS
+
+                for n in ast.walk(method):
+                    if (
+                        isinstance(n, ast.Name)
+                        and isinstance(n.ctx, ast.Load)
+                        and n.id not in allowed
+                    ):
+                        return (
+                            f"Name '{n.id}' is used in execute() but never defined "
+                            f"(NameError at runtime)"
+                        )
 
         return None
 
@@ -494,6 +537,35 @@ class CodeValidator:
                         f"{required_names}"
                     )
 
+        return None
+
+    def _check_await_on_entity_methods(self, tree: ast.AST) -> Optional[str]:
+        """Detect 'await entity.<method>(...)' where entity methods are synchronous.
+
+        All entity methods (move, eat_nearby, attack_nearby, is_alive, etc.) are
+        regular sync methods. Awaiting them raises TypeError at runtime.
+
+        Args:
+            tree: AST of the source code
+
+        Returns:
+            Error message if await on entity method found, None otherwise
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Await):
+                continue
+            call = node.value
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "entity"
+            ):
+                method = call.func.attr
+                return (
+                    f"Do not use 'await entity.{method}()' — entity methods are synchronous. "
+                    f"Use 'entity.{method}(...)' without await."
+                )
         return None
 
     def _check_trait_contract(self, tree: ast.AST) -> Optional[str]:
