@@ -71,7 +71,8 @@ Once all services are running:
 ## High-Level Architecture
 
 See `docs/tech_stack.md` for the full architecture, data layer design, event bus protocol,
-and sandbox security model.
+and sandbox security model. See `docs/open_mutation_api.md` for the extended Open Mutation
+API used by external agents.
 
 ```text
 Browser (React + PixiJS)
@@ -90,6 +91,18 @@ Browser (React + PixiJS)
    RuntimePatcher  ──►  DynamicRegistry (hot-reload)
 ```
 
+Open Mutation API turns the **local LLM into just one of many possible mutation clients**:
+
+```text
+External agent (Claude, GPT-4, scripts, curl)
+        │
+        ▼
+  HTTP / WebSocket Mutation API
+        │
+        ▼
+MutationGatekeeper → Sandbox Validator → RuntimePatcher → DynamicRegistry/Core
+```
+
 Key backend directories:
 
 - `backend/core` — simulation engine, entities, traits, physics, environment.
@@ -106,13 +119,22 @@ the sandbox before being loaded into the running world.
 ## Key API Endpoints
 
 ```text
-GET  /api/health              — Redis · Ollama · Core status
-GET  /api/world/state         — Current tick, entity count, world params
-GET  /api/stats               — Uptime, TPS, avg energy, mutations applied
-POST /api/world/params        — Tune simulation parameters live
-POST /api/evolution/trigger   — Force an evolution cycle manually
-GET  /api/mutations           — List all generated trait mutations
-GET  /api/entities/{id}       — Inspect a specific Molbot
+GET  /api/health                         — Redis · Ollama · Core status
+GET  /api/world/state                    — Current tick, entity count, world params
+GET  /api/stats                          — Uptime, TPS, avg energy, mutations applied
+POST /api/world/params                   — Tune simulation parameters live
+POST /api/evolution/trigger              — Force an evolution cycle manually
+GET  /api/mutations                      — List all generated trait mutations
+GET  /api/entities/{id}                  — Inspect a specific Molbot
+
+# Open Mutation / Agent APIs
+GET  /api/agents/context/metrics         — Aggregated world metrics for external agents
+GET  /api/agents/context/tasks           — Evolution tasks queue from Watcher/Architect
+GET  /api/agents/context/sandbox-api     — Current sandbox rules and allowed patterns
+POST /api/mutations/propose              — Propose a new Trait mutation for validation
+GET  /api/mutations/{mutation_id}/status — Track validation / activation status
+GET  /api/mutations/{mutation_id}/effects— Fitness impact after observation window
+WS   /api/agents/telemetry               — Real-time world/tasks/mutation events
 ```
 
 ---
