@@ -7,6 +7,7 @@ while handling failures gracefully.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -168,8 +169,20 @@ class RuntimePatcher:
 
         # Step 3: Register the trait class
         try:
-            self._registry.register(trait_name, trait_class)
+            files_to_delete = self._registry.register(trait_name, trait_class, file_path=file_path)
             self._registry_version += 1
+
+            # Delete evicted old-version files from disk
+            for old_file in files_to_delete:
+                try:
+                    await asyncio.to_thread(Path(old_file).unlink, True)
+                    logger.info("old_trait_version_deleted", file_path=old_file)
+                except Exception as _del_exc:
+                    logger.warning(
+                        "old_trait_version_delete_failed",
+                        file_path=old_file,
+                        error=str(_del_exc),
+                    )
 
             # Store source code in registry so the API can serve it
             source_code = Path(file_path).read_text()

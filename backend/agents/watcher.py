@@ -21,6 +21,35 @@ from backend.bus.events import EvolutionTrigger, FeedMessage, MutationRollback
 from backend.config import Settings
 from backend.core.telemetry import WorldSnapshot
 
+# Sandbox constraints sent to external agents with each task
+_SANDBOX_CONSTRAINTS: list[str] = [
+    "не использовать циклы > 100 итераций",
+    "только: math, random, dataclasses, typing, enum, collections, functools, itertools",
+    "определить BaseTrait stub в теле файла, не импортировать из backend.*",
+]
+
+_TASK_TTL: dict[str, int] = {"critical": 900, "high": 600}
+
+
+def _format_task_description(trigger: EvolutionTrigger, snapshot: WorldSnapshot) -> str:
+    """Build a human-readable task description from an anomaly trigger."""
+    if trigger.problem_type == "starvation":
+        return (
+            f"Средняя энергия упала до {snapshot.avg_energy:.1f}%. "
+            f"Нужен Trait, улучшающий сбор ресурсов."
+        )
+    if trigger.problem_type == "extinction":
+        return (
+            f"Популяция критически мала: {snapshot.entity_count} существ. "
+            f"Нужен Trait, повышающий выживаемость."
+        )
+    if trigger.problem_type == "overpopulation":
+        return (
+            f"Перенаселение: {snapshot.entity_count} существ. "
+            f"Нужен Trait для регуляции роста."
+        )
+    return f"Периодическое улучшение популяции ({trigger.problem_type})."
+
 logger = structlog.get_logger()
 
 # Typical max energy for entities (from entity_manager.py entity creation)
@@ -216,6 +245,9 @@ class WatcherAgent:
                     await self._bus.publish(Channels.EVOLUTION_TRIGGER, most_severe)
                     self._last_trigger_time = time.time()
 
+                    # Publish task for external agents (Open Mutation API)
+                    await self._publish_agent_task(most_severe, snapshot)
+
                     logger.info(
                         "evolution_triggered",
                         trigger_id=most_severe.trigger_id,
@@ -377,6 +409,24 @@ class WatcherAgent:
                 delta=round(delta, 3),
             )
 
+            # Write effects for external agent mutations (Open Mutation API)
+            verdict = "negative" if delta < -threshold else ("positive" if delta > 0 else "neutral")
+            effects_data = {
+                "delta": {
+                    "entity_count_delta": snapshot.entity_count - baseline,
+                    "avg_energy_delta": round(
+                        snapshot.avg_energy - (self._prev_snapshot.avg_energy if self._prev_snapshot else snapshot.avg_energy),
+                        2,
+                    ),
+                },
+                "verdict": verdict,
+            }
+            await self._redis.set(
+                f"evo:mutation:{mutation_id}:effects",
+                json.dumps(effects_data),
+                ex=86400 * 7,
+            )
+
             if delta < -threshold:
                 pct = abs(round(delta * 100, 1))
                 logger.warning(
@@ -446,6 +496,9 @@ class WatcherAgent:
                 metadata={"cycle_id": cycle_id, "interval_sec": interval},
             ),
         )
+        # Publish task for external agents
+        if self._prev_snapshot is not None:
+            await self._publish_agent_task(trigger, self._prev_snapshot)
         logger.info("periodic_evolution_triggered", cycle_id=cycle_id, interval_sec=interval)
 
     def _can_trigger_evolution(self) -> bool:
@@ -472,6 +525,63 @@ class WatcherAgent:
         elapsed = time.time() - self._last_trigger_time
         remaining = self._settings.evolution_cooldown_sec - elapsed
         return max(0.0, remaining)
+
+    async def _publish_agent_task(
+        self,
+        trigger: EvolutionTrigger,
+        snapshot: WorldSnapshot,
+    ) -> None:
+        """Write a task to Redis for external agents (Open Mutation API).
+
+        Creates:
+          - agent:task:{task_id} → task body (with TTL)
+          - agent:tasks:queue (Sorted Set, score = expires_at)
+          - publishes TaskPublished to ch:agent:tasks for WebSocket subscribers
+        """
+        task_id = f"task_{uuid.uuid4().hex[:8]}"
+        ttl_sec = _TASK_TTL.get(trigger.severity, 300)
+        expires_at = time.time() + ttl_sec
+
+        task_body: dict[str, object] = {
+            "task_id": task_id,
+            "expires_at": expires_at,
+            "ttl_remaining_sec": ttl_sec,
+            "source": "watcher",
+            "problem_type": trigger.problem_type,
+            "severity": trigger.severity,
+            "description": _format_task_description(trigger, snapshot),
+            "suggested_area": trigger.suggested_area,
+            "world_context": {
+                "entity_count": snapshot.entity_count,
+                "avg_energy": round(snapshot.avg_energy, 1),
+            },
+            "constraints": _SANDBOX_CONSTRAINTS,
+        }
+
+        await self._redis.set(
+            f"agent:task:{task_id}",
+            json.dumps(task_body),
+            ex=ttl_sec,
+        )
+        await self._redis.zadd("agent:tasks:queue", {task_id: expires_at})
+
+        # Notify WebSocket subscribers
+        event_payload: dict[str, object] = {
+            "event_type": "TaskPublished",
+            "task_id": task_id,
+            "problem_type": trigger.problem_type,
+            "severity": trigger.severity,
+            "expires_at": expires_at,
+        }
+        await self._redis.publish(Channels.AGENT_TASKS, json.dumps(event_payload))
+
+        logger.info(
+            "agent_task_published",
+            task_id=task_id,
+            problem_type=trigger.problem_type,
+            severity=trigger.severity,
+            ttl_sec=ttl_sec,
+        )
 
     def _get_most_severe(self, anomalies: list[EvolutionTrigger]) -> EvolutionTrigger:
         """Select the most severe anomaly from a list.

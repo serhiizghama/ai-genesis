@@ -116,10 +116,14 @@ def create_app(
     from backend.api.routes_world import router as world_router
     from backend.api.routes_evolution import router as evolution_router
     from backend.api.routes_persistence import router as persistence_router
+    from backend.api.routes_agents import router as agents_router
+    from backend.api.ws_agents import router as ws_agents_router
 
     app.include_router(world_router, prefix="/api", tags=["world"])
     app.include_router(evolution_router, prefix="/api", tags=["evolution"])
     app.include_router(persistence_router, prefix="/api", tags=["persistence"])
+    app.include_router(agents_router, prefix="/api", tags=["agents"])
+    app.include_router(ws_agents_router, prefix="/api", tags=["agents-ws"])
 
     # Health check endpoint
     @app.get("/", tags=["health"])

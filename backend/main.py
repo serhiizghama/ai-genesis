@@ -20,6 +20,7 @@ from backend.agents.architect import ArchitectAgent
 from backend.agents.coder import CoderAgent
 from backend.agents.cycle_manager import EvolutionCycleManager
 from backend.agents.llm_client import LLMClient
+from backend.agents.mutation_gatekeeper import MutationGatekeeper
 from backend.agents.watcher import WatcherAgent
 from backend.bus.channels import Channels
 from backend.bus.events import FeedMessage as FeedEvent
@@ -65,6 +66,7 @@ class SimulationRunner:
         self.architect: Optional[ArchitectAgent] = None
         self.coder: Optional[CoderAgent] = None
         self.patcher: Optional[RuntimePatcher] = None
+        self.gatekeeper: Optional[MutationGatekeeper] = None
         self.uvicorn_server: Optional[uvicorn.Server] = None
         self.shutdown_event = asyncio.Event()
         self.db_pool = None
@@ -251,6 +253,14 @@ class SimulationRunner:
         )
         logger.info("runtime_patcher_initialized")
 
+        # Create MutationGatekeeper — validates and dispatches external agent mutations
+        self.gatekeeper = MutationGatekeeper(
+            redis=redis,  # type: ignore
+            event_bus=event_bus,
+            settings=settings,
+        )
+        logger.info("mutation_gatekeeper_initialized")
+
         # Restore simulation state from last checkpoint (if any)
         if self.db_pool is not None:
             try:
@@ -302,6 +312,7 @@ class SimulationRunner:
         architect_task = asyncio.create_task(self.architect.run())
         coder_task = asyncio.create_task(self.coder.run())
         patcher_task = asyncio.create_task(self.patcher.run())
+        gatekeeper_task = asyncio.create_task(self.gatekeeper.run())
 
         # Give agents a moment to subscribe before starting event bus listener
         await asyncio.sleep(1)  # Wait for all subscriptions to complete
@@ -316,6 +327,7 @@ class SimulationRunner:
             architect="running",
             coder="running",
             patcher="running",
+            gatekeeper="running",
             api_server="http://0.0.0.0:8000",
             docs="http://0.0.0.0:8000/docs",
         )
@@ -334,6 +346,10 @@ class SimulationRunner:
         if self.watcher:
             self.watcher.stop()
 
+        # Stop the mutation gatekeeper
+        if self.gatekeeper:
+            self.gatekeeper.stop()
+
         # Stop the uvicorn server
         if self.uvicorn_server:
             self.uvicorn_server.should_exit = True
@@ -350,6 +366,7 @@ class SimulationRunner:
                     architect_task,
                     coder_task,
                     patcher_task,
+                    gatekeeper_task,
                     event_bus_task,
                     server_task,
                     return_exceptions=True,
@@ -363,6 +380,7 @@ class SimulationRunner:
             architect_task.cancel()
             coder_task.cancel()
             patcher_task.cancel()
+            gatekeeper_task.cancel()
             event_bus_task.cancel()
             server_task.cancel()
 

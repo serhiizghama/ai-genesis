@@ -52,3 +52,7 @@ class Channels:
     # All Agents → WebSocket Handler
     # Payload: {agent, message, timestamp}
     FEED = "ch:feed"
+
+    # Watcher Agent → External Agents (WebSocket telemetry + HTTP polling)
+    # Payload: {task_id, problem_type, severity, expires_at, ...}
+    AGENT_TASKS = "ch:agent:tasks"

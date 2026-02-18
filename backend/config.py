@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     fitness_rollback_threshold: float = 0.20  # Roll back mutation if population drops >20%
     periodic_evolution_interval_sec: int = 90  # Fire a periodic trigger every N seconds
 
+    # Open Mutation API — increment when sandbox rules change
+    sandbox_rules_version: str = "3"
+
     model_config = SettingsConfigDict(
         env_prefix="GENESIS_",
         env_file=".env",

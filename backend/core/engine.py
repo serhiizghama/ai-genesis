@@ -17,7 +17,7 @@ from redis.asyncio import Redis
 from backend.bus.channels import Channels
 from backend.bus.events import FeedMessage, TelemetryEvent
 from backend.config import Settings
-from backend.core.dynamic_registry import DynamicRegistry
+from backend.core.dynamic_registry import DynamicRegistry, canonical_name
 from backend.core.entity_manager import EntityManager
 from backend.core.environment import Environment
 from backend.core.telemetry import WorldSnapshot, collect_snapshot, save_snapshot_to_redis
@@ -429,32 +429,52 @@ class CoreEngine:
     def _apply_new_registry_traits(self) -> None:
         """Apply any newly registered traits to all living entities.
 
-        Compares current registry version to the last known version.
-        If new traits were registered since last tick, gives all living
-        entities an instance of each new trait (if they don't have it).
+        Uses the registry version counter to detect changes (increments on
+        every register/unregister, so it also catches same-family updates).
+
+        For each registry entry:
+        - If the entity already has a trait in the same canonical family,
+          replace it in-place (upgrades old version → new version).
+        - Otherwise add the trait, respecting max_active_traits cap.
         """
-        current_version = self.registry.unique_trait_count()
+        current_version = self.registry.version
         if current_version <= self._known_registry_version:
             return
 
-        # New traits have been registered — find which ones are new
         trait_snapshot = self.registry.get_snapshot()
         for entity in self.entity_manager.alive():
-            existing_trait_names = {t.__class__.__name__ for t in entity.traits}
-            for trait_name, trait_cls in trait_snapshot.items():
-                if trait_name not in existing_trait_names:
+            # Build map: canonical_family_name → index in entity.traits
+            entity_canonical: dict[str, int] = {}
+            for i, t in enumerate(entity.traits):
+                entity_canonical[canonical_name(t.__class__.__name__)] = i
+
+            for canon_name, trait_cls in trait_snapshot.items():
+                if canon_name in entity_canonical:
+                    # Replace old family version in-place
+                    idx = entity_canonical[canon_name]
+                    try:
+                        entity.traits[idx] = trait_cls()
+                    except Exception as exc:
+                        logger.warning(
+                            "trait_replace_failed",
+                            entity_id=entity.id,
+                            trait_name=canon_name,
+                            error=str(exc),
+                        )
+                elif len(entity.traits) < self.settings.max_active_traits:
+                    # Add new trait if under the per-entity cap
                     try:
                         entity.traits.append(trait_cls())
                         logger.info(
                             "trait_applied_to_entity",
                             entity_id=entity.id,
-                            trait_name=trait_name,
+                            trait_name=canon_name,
                         )
                     except Exception as exc:
                         logger.warning(
                             "trait_apply_failed",
                             entity_id=entity.id,
-                            trait_name=trait_name,
+                            trait_name=canon_name,
                             error=str(exc),
                         )
 
