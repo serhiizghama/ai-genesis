@@ -45,6 +45,7 @@ class EvolutionTrigger:
     suggested_area: str = ""  # 'traits' | 'physics' | 'environment'
     snapshot_key: str = ""
     cycle_id: str = ""  # evolution cycle ID threaded through watcher → architect → coder → patcher
+    world_context: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,6 +86,7 @@ class EvolutionPlan:
     arch_target_class: str = ""  # spec target_class: 'Trait'|'WorldPhysics'|'Environment'|'EntityLogic'
     expected_outcome: str = ""
     constraints: list[str] = field(default_factory=list)
+    world_context: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -141,6 +143,23 @@ class MutationFailed:
     error: str
     stage: str  # 'validation' | 'import' | 'execution'
     rollback_to: Optional[str] = None  # trait_name_v{N-1} or None
+
+
+@dataclass
+class MutationRollback:
+    """Published by Watcher Agent when a mutation causes population decline.
+
+    Attributes:
+        mutation_id: ID of the mutation to roll back
+        trait_name: Name of the trait to unregister
+        reason: Reason for rollback (e.g., 'population_decline')
+        fitness_delta: Fractional change in population (e.g., -0.25 means -25%)
+    """
+
+    mutation_id: str
+    trait_name: str
+    reason: str
+    fitness_delta: float
 
 
 @dataclass

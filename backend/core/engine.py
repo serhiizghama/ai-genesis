@@ -15,7 +15,7 @@ import structlog
 from redis.asyncio import Redis
 
 from backend.bus.channels import Channels
-from backend.bus.events import TelemetryEvent
+from backend.bus.events import FeedMessage, TelemetryEvent
 from backend.config import Settings
 from backend.core.dynamic_registry import DynamicRegistry
 from backend.core.entity_manager import EntityManager
@@ -25,6 +25,7 @@ from backend.core.traits import TraitExecutor
 from backend.core.world_physics import WorldPhysics
 
 if TYPE_CHECKING:
+    import asyncpg
     from backend.api.ws_handler import ConnectionManager
 
 logger = structlog.get_logger()
@@ -49,6 +50,7 @@ class CoreEngine:
         redis: Redis,
         settings: Settings,
         ws_manager: Optional[ConnectionManager] = None,
+        db_pool: Optional[asyncpg.Pool] = None,
     ) -> None:
         """Initialize the core engine.
 
@@ -68,11 +70,19 @@ class CoreEngine:
         self.redis = redis
         self.settings = settings
         self.ws_manager = ws_manager
+        self._db_pool = db_pool
+
+        # Checkpoint interval: ~60 sec at 62.5 TPS
+        self._checkpoint_interval_ticks = 3750
+
+        # Trait errors to report to feed (dedup by trait_name)
+        self._reported_trait_errors: set[str] = set()
 
         # Create trait executor with configured timeouts
         self.trait_executor = TraitExecutor(
             timeout_sec=settings.trait_timeout_sec,
             tick_budget_sec=settings.tick_time_budget_sec,
+            on_trait_error=self._on_trait_error,
         )
 
         # Tick counter
@@ -88,6 +98,15 @@ class CoreEngine:
 
         # Track registry version to detect new mutations and apply them to living entities
         self._known_registry_version = 0
+
+        # Cumulative kill/death counters (never reset, shown in header)
+        self._predator_kill_count = 0   # molbots killed by predators
+        self._virus_kill_count = 0      # molbots killed by virus
+        self._predator_death_count = 0  # predators that died (any cause)
+
+        # Virus state
+        self._virus_active = False
+        self._virus_ticks_remaining = 0
 
     async def run(self) -> None:
         """Main simulation loop.
@@ -122,6 +141,8 @@ class CoreEngine:
 
                 # T-019: Lifecycle management
                 self._handle_deaths()
+                await self._handle_predators()
+                await self._handle_virus()
 
                 # Apply any new mutations from registry to all living entities
                 self._apply_new_registry_traits()
@@ -140,6 +161,13 @@ class CoreEngine:
                 # T-036/T-037: Telemetry snapshot collection
                 if self.tick_counter % self.settings.snapshot_interval_ticks == 0:
                     await self._collect_and_send_telemetry()
+
+                # PostgreSQL world checkpoint (every ~60 sec)
+                if (
+                    self._db_pool is not None
+                    and self.tick_counter % self._checkpoint_interval_ticks == 0
+                ):
+                    asyncio.create_task(self._save_checkpoint_async())
 
             except Exception as exc:
                 # Never let the simulation loop crash
@@ -217,8 +245,15 @@ class CoreEngine:
         dead_entities = [e for e in entities if not e.is_alive()]
 
         for entity in dead_entities:
-            # Track death cause (in MVP, always starvation when energy <= 0)
-            death_cause = "starvation"
+            # Track death cause
+            if entity.entity_type == "predator":
+                death_cause = "predator_death"
+                self._predator_death_count += 1
+            elif getattr(entity, "infected", False):
+                death_cause = "virus"
+                self._virus_kill_count += 1
+            else:
+                death_cause = "starvation"
             self.death_stats[death_cause] = self.death_stats.get(death_cause, 0) + 1
 
             # Remove from simulation
@@ -276,13 +311,15 @@ class CoreEngine:
             y = random.uniform(0, self.settings.world_height)
             traits = [cls() for cls in trait_snapshot.values()]
 
-            self.entity_manager.spawn(
+            entity = self.entity_manager.spawn(
                 x=x,
                 y=y,
                 traits=traits,
                 generation=generation,
                 tick=self.tick_counter,
             )
+            entity._environment = self.environment
+            entity._entity_manager = self.entity_manager
             spawned += 1
 
         if spawned > 0:
@@ -443,7 +480,7 @@ class CoreEngine:
             # This staggers deaths and makes the population graph show real movement.
             initial_energy = random.uniform(50.0, 100.0)
 
-            self.entity_manager.spawn(
+            entity = self.entity_manager.spawn(
                 x=x,
                 y=y,
                 traits=[],
@@ -451,6 +488,8 @@ class CoreEngine:
                 tick=self.tick_counter,
                 initial_energy=initial_energy,
             )
+            entity._environment = self.environment
+            entity._entity_manager = self.entity_manager
 
     async def _broadcast_world_state(self) -> None:
         """Broadcast current world state to all WebSocket clients.
@@ -465,13 +504,222 @@ class CoreEngine:
         from backend.api.ws_handler import build_world_frame
 
         entities = self.entity_manager.alive()
+        resources = self.environment.get_all_resources()
 
         # Build binary frame
-        frame = build_world_frame(self.tick_counter, entities)
+        frame = build_world_frame(self.tick_counter, entities, resources)
 
         # Broadcast to all connected clients
         if self.ws_manager:
             await self.ws_manager.broadcast_bytes(frame)
+
+    async def _save_checkpoint_async(self) -> None:
+        """Persist a world checkpoint to PostgreSQL without blocking the tick loop."""
+        from backend.db.repository import save_checkpoint
+
+        try:
+            entities = self.entity_manager.alive()
+            avg_energy = 0.0
+            if entities:
+                avg_energy = sum(e.energy for e in entities) / len(entities)
+
+            params = {
+                "tick_rate_ms": self.settings.tick_rate_ms,
+                "max_entities": self.settings.max_entities,
+                "min_population": self.settings.min_population,
+                "world_width": self.settings.world_width,
+                "world_height": self.settings.world_height,
+            }
+
+            await save_checkpoint(
+                pool=self._db_pool,
+                tick=self.tick_counter,
+                params=params,
+                entities=entities,
+                avg_energy=avg_energy,
+                resource_count=self.environment.count(),
+            )
+        except Exception as exc:
+            logger.warning("checkpoint_save_failed", tick=self.tick_counter, error=str(exc))
+
+    def _on_trait_error(self, entity_id: str, trait_name: str, error_str: str) -> None:
+        """Sync callback invoked by TraitExecutor on first error for a trait.
+
+        Deduplicates by trait_name and schedules an async feed message.
+        """
+        if trait_name in self._reported_trait_errors:
+            return
+        self._reported_trait_errors.add(trait_name)
+        asyncio.create_task(self._publish_trait_error_to_feed(entity_id, trait_name, error_str))
+
+    async def _publish_trait_error_to_feed(
+        self, entity_id: str, trait_name: str, error_str: str
+    ) -> None:
+        """Publish a trait runtime error to the evolution feed."""
+        import json
+        from dataclasses import asdict
+
+        error_short = error_str[:200]
+        msg = FeedMessage(
+            agent="engine",
+            action="trait_error",
+            message=f"❌ Трейт {trait_name} упал: {error_short}",
+            metadata={
+                "trait_name": trait_name,
+                "error": error_str,
+                "entity_id": entity_id,
+            },
+        )
+        try:
+            payload = json.dumps(asdict(msg), default=str)
+            await self.redis.publish(Channels.FEED, payload)
+        except Exception as exc:
+            logger.warning("trait_error_feed_publish_failed", error=str(exc))
+
+    async def _handle_predators(self) -> None:
+        """Spawn and update predators as population autoregulators.
+
+        - Spawns a new predator when molbots exceed predator_spawn_threshold
+          and predator count is below max_predators.
+        - Each predator hunts the nearest molbot, moves toward it, and kills
+          it on contact (gaining energy).
+        """
+        all_alive = self.entity_manager.alive()
+        molbots = [e for e in all_alive if e.entity_type == "molbot"]
+        predators = [e for e in all_alive if e.entity_type == "predator"]
+
+        molbot_count = len(molbots)
+        predator_count = len(predators)
+
+        # Spawn a new predator if population is high enough
+        if (
+            molbot_count > self.settings.predator_spawn_threshold
+            and predator_count < self.settings.max_predators
+        ):
+            px = random.uniform(0, self.settings.world_width)
+            py = random.uniform(0, self.settings.world_height)
+            predator = self.entity_manager.spawn_predator(px, py, tick=self.tick_counter)
+            predator._environment = self.environment
+            logger.info(
+                "predator_spawned",
+                tick=self.tick_counter,
+                total_molbots=molbot_count,
+                total_predators=predator_count + 1,
+            )
+
+        # Each predator hunts the nearest molbot
+        for predator in predators:
+            nearby = self.entity_manager.nearby_entities(predator.x, predator.y, 300.0)
+            targets = [e for e in nearby if e.entity_type == "molbot" and e.is_alive()]
+
+            if not targets:
+                continue
+
+            # Find nearest molbot
+            target = min(
+                targets,
+                key=lambda m: (m.x - predator.x) ** 2 + (m.y - predator.y) ** 2,
+            )
+
+            dx = target.x - predator.x
+            dy = target.y - predator.y
+            dist = (dx * dx + dy * dy) ** 0.5
+
+            if dist > 0:
+                # Move toward target (capped by _MAX_MOVE_PER_TICK inside move())
+                speed = 50.0
+                predator.move(dx / dist * speed, dy / dist * speed)
+
+            # Kill on contact
+            if dist < (predator.radius + target.radius + 5):
+                target.state = "dead"
+                predator.energy = min(predator.energy + 80.0, predator.max_energy)
+                self._predator_kill_count += 1
+
+    async def _handle_virus(self) -> None:
+        """Spread a virus through the molbot population as an autoregulator.
+
+        - Triggers when molbot count exceeds virus_spawn_threshold (random chance).
+        - Infected entities: extra energy drain, spread to neighbors each tick.
+        - Clears automatically when no infected entities remain.
+        """
+        molbots = [e for e in self.entity_manager.alive() if e.entity_type == "molbot"]
+        molbot_count = len(molbots)
+
+        if not self._virus_active:
+            # Try to trigger virus outbreak
+            if (
+                molbot_count > self.settings.virus_spawn_threshold
+                and random.random() < 0.001
+            ):
+                # Pick a random molbot as patient zero
+                patient_zero = random.choice(molbots)
+                patient_zero.infected = True
+                patient_zero.infection_timer = self.settings.virus_duration_ticks
+                self._virus_active = True
+                self._virus_ticks_remaining = self.settings.virus_duration_ticks
+                logger.info("virus_started", tick=self.tick_counter, patient_zero=patient_zero.id)
+                asyncio.create_task(self._publish_virus_start_feed())
+            return
+
+        # Virus is active — spread and tick down
+        infected = [e for e in molbots if e.infected]
+
+        for entity in infected:
+            # Spread to nearby molbots
+            neighbors = self.entity_manager.nearby_entities(entity.x, entity.y, 40.0)
+            for neighbor in neighbors:
+                if neighbor.entity_type == "molbot" and not neighbor.infected and neighbor.is_alive():
+                    if random.random() < 0.25:
+                        neighbor.infected = True
+                        neighbor.infection_timer = self.settings.virus_duration_ticks
+
+            # Tick down infection timer
+            entity.infection_timer -= 1
+            if entity.infection_timer <= 0:
+                entity.infected = False
+                entity.infection_timer = 0
+
+        # Check if virus is over
+        still_infected = [e for e in molbots if e.infected]
+        if not still_infected:
+            self._virus_active = False
+            logger.info("virus_ended", tick=self.tick_counter)
+            asyncio.create_task(self._publish_virus_end_feed())
+
+    async def _publish_virus_start_feed(self) -> None:
+        """Publish virus outbreak start to the evolution feed."""
+        import json
+        from dataclasses import asdict
+
+        msg = FeedMessage(
+            agent="engine",
+            action="virus_start",
+            message="🦠 Вирус начался",
+            metadata={"tick": self.tick_counter},
+        )
+        try:
+            payload = json.dumps(asdict(msg), default=str)
+            await self.redis.publish(Channels.FEED, payload)
+        except Exception as exc:
+            logger.warning("virus_feed_publish_failed", error=str(exc))
+
+    async def _publish_virus_end_feed(self) -> None:
+        """Publish virus extinction to the evolution feed."""
+        import json
+        from dataclasses import asdict
+
+        msg = FeedMessage(
+            agent="engine",
+            action="virus_end",
+            message="🦠 Вирус погас",
+            metadata={"tick": self.tick_counter},
+        )
+        try:
+            payload = json.dumps(asdict(msg), default=str)
+            await self.redis.publish(Channels.FEED, payload)
+        except Exception as exc:
+            logger.warning("virus_feed_publish_failed", error=str(exc))
 
     def stop(self) -> None:
         """Stop the simulation loop gracefully.

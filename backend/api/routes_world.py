@@ -65,6 +65,12 @@ class StatsResponse(BaseModel):
         default=0, description="Number of mutations applied (Phase 5)"
     )
     tps: float = Field(..., description="Ticks per second (actual vs target)")
+    predator_kills: int = Field(default=0, description="Molbots killed by predators (cumulative)")
+    virus_kills: int = Field(default=0, description="Molbots killed by virus (cumulative)")
+    predator_deaths: int = Field(default=0, description="Predators that died (cumulative)")
+    cycle_stage: str = Field(default="idle", description="Current evolution cycle stage")
+    cycle_problem: str = Field(default="", description="Problem type triggering the cycle")
+    cycle_severity: str = Field(default="", description="Severity of the detected problem")
 
 
 # -------------------------------------------------------------------------
@@ -262,6 +268,26 @@ async def get_stats(request: Request) -> StatsResponse:
     # For now, use current count as placeholder
     total_spawned = engine.entity_manager.count()
 
+    # Read current evolution cycle state from Redis
+    cycle_stage = "idle"
+    cycle_problem = ""
+    cycle_severity = ""
+    redis = getattr(app_state, "redis", None)
+    if redis:
+        try:
+            lock_exists = await redis.exists("evo:cycle:lock")
+            if lock_exists:
+                raw = await redis.hgetall("evo:cycle:current")
+                if raw:
+                    decoded = {k.decode() if isinstance(k, bytes) else k:
+                               v.decode() if isinstance(v, bytes) else v
+                               for k, v in raw.items()}
+                    cycle_stage = decoded.get("stage", "idle")
+                    cycle_problem = decoded.get("problem_type", "")
+                    cycle_severity = decoded.get("severity", "")
+        except Exception:
+            pass  # Redis unavailable — stay idle
+
     return StatsResponse(
         uptime_seconds=round(uptime, 2),
         tick=engine.tick_counter,
@@ -271,6 +297,12 @@ async def get_stats(request: Request) -> StatsResponse:
         resource_count=resource_count,
         mutations_applied=0,  # TODO: Track in Phase 5
         tps=round(tps, 2),
+        predator_kills=engine._predator_kill_count,
+        virus_kills=engine._virus_kill_count,
+        predator_deaths=engine._predator_death_count,
+        cycle_stage=cycle_stage,
+        cycle_problem=cycle_problem,
+        cycle_severity=cycle_severity,
     )
 
 
@@ -361,6 +393,7 @@ class EntityDetailResponse(BaseModel):
 
     numeric_id: int = Field(..., description="Numeric ID (hash) as seen in stream")
     string_id: str = Field(..., description="Internal UUID")
+    entity_type: str = Field(..., description="Entity type: 'molbot' or 'predator'")
     generation: int
     age: int
     energy: float
@@ -370,6 +403,10 @@ class EntityDetailResponse(BaseModel):
     traits: list[str] = Field(..., description="Active trait class names")
     deactivated_traits: list[str]
     evolution_count: int = Field(..., description="Number of mutations applied to this entity")
+    infected: bool = Field(default=False, description="Whether entity is currently infected by virus")
+    infection_timer: int = Field(default=0, description="Ticks remaining until virus recovery")
+    metabolism_rate: float = Field(..., description="Energy consumed per tick")
+    parent_id: str | None = Field(default=None, description="Parent entity UUID (null for seed entities)")
 
 
 @router.get("/entities/{entity_id}", response_model=EntityDetailResponse)
@@ -389,6 +426,7 @@ async def get_entity(entity_id: int, request: Request) -> EntityDetailResponse:
     return EntityDetailResponse(
         numeric_id=entity_id,
         string_id=entity.id,
+        entity_type=entity.entity_type,
         generation=entity.generation,
         age=entity.age,
         energy=round(entity.energy, 1),
@@ -398,6 +436,10 @@ async def get_entity(entity_id: int, request: Request) -> EntityDetailResponse:
         traits=trait_names,
         deactivated_traits=list(entity.deactivated_traits),
         evolution_count=len(entity.traits),
+        infected=entity.infected,
+        infection_timer=entity.infection_timer,
+        metabolism_rate=round(entity.metabolism_rate, 2),
+        parent_id=entity.parent_id,
     )
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useWorldStream, type EntityState } from '../hooks/useWorldStream';
+import { useWorldStream, type EntityState, type ResourceState } from '../hooks/useWorldStream';
 
 /**
  * Debug canvas component that renders entities as colored circles.
@@ -9,7 +9,7 @@ import { useWorldStream, type EntityState } from '../hooks/useWorldStream';
  */
 export function DebugCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { entities, tick, connected } = useWorldStream();
+  const { entities, resources, tick, connected } = useWorldStream();
   const animationFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -34,13 +34,18 @@ export function DebugCanvas() {
       ctx.fillStyle = '#0a0a0f'; // Dark background
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+      // Draw resources (food) first so entities render on top
+      resources.forEach((resource: ResourceState) => {
+        drawResource(ctx, resource);
+      });
+
       // Draw entities
       entities.forEach((entity: EntityState) => {
         drawEntity(ctx, entity);
       });
 
       // Draw connection status
-      drawStatus(ctx, connected, tick, entities.length);
+      drawStatus(ctx, connected, tick, entities.length, resources.length);
 
       // Continue loop
       animationFrameRef.current = requestAnimationFrame(render);
@@ -56,7 +61,7 @@ export function DebugCanvas() {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [entities, tick, connected]);
+  }, [entities, resources, tick, connected]);
 
   return (
     <canvas
@@ -70,6 +75,24 @@ export function DebugCanvas() {
       }}
     />
   );
+}
+
+/**
+ * Draw a food resource as a small green diamond.
+ *
+ * @param ctx - Canvas rendering context
+ * @param resource - Resource to draw
+ */
+function drawResource(ctx: CanvasRenderingContext2D, resource: ResourceState): void {
+  const size = 3;
+  ctx.fillStyle = 'rgba(77, 255, 145, 0.7)'; // green with slight transparency
+  ctx.beginPath();
+  ctx.moveTo(resource.x, resource.y - size);
+  ctx.lineTo(resource.x + size, resource.y);
+  ctx.lineTo(resource.x, resource.y + size);
+  ctx.lineTo(resource.x - size, resource.y);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /**
@@ -93,16 +116,18 @@ function drawEntity(ctx: CanvasRenderingContext2D, entity: EntityState): void {
  * @param connected - WebSocket connection status
  * @param tick - Current simulation tick
  * @param entityCount - Number of entities
+ * @param resourceCount - Number of food resources
  */
 function drawStatus(
   ctx: CanvasRenderingContext2D,
   connected: boolean,
   tick: number,
-  entityCount: number
+  entityCount: number,
+  resourceCount: number,
 ): void {
   ctx.fillStyle = connected ? '#00ff00' : '#ff0000';
   ctx.font = '14px monospace';
 
   const status = connected ? 'CONNECTED' : 'DISCONNECTED';
-  ctx.fillText(`${status} | Tick: ${tick} | Entities: ${entityCount}`, 10, 20);
+  ctx.fillText(`${status} | Tick: ${tick} | Entities: ${entityCount} | Food: ${resourceCount}`, 10, 20);
 }

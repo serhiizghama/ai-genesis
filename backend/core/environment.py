@@ -240,8 +240,8 @@ class Environment:
         if resource.id not in self._resources:
             return False
 
-        # Transfer energy to entity
-        entity.consume_resource(resource.amount)
+        # Transfer energy to entity (internal path — resource is real)
+        entity._receive_energy(resource.amount)
 
         # Remove resource from world
         self._remove_from_spatial_grid(resource)

@@ -33,6 +33,7 @@ class AppState:
         ws_manager: ConnectionManager,
         event_bus: Optional[Any] = None,
         feed_ws_manager: Optional[FeedConnectionManager] = None,
+        db_pool: Optional[Any] = None,
     ) -> None:
         """Initialize app state.
 
@@ -43,6 +44,7 @@ class AppState:
             ws_manager: WebSocket connection manager for real-time streaming.
             event_bus: Shared EventBus instance for publishing events.
             feed_ws_manager: WebSocket manager for Evolution Feed streaming.
+            db_pool: asyncpg connection pool for PostgreSQL persistence.
         """
         self.engine = engine
         self.redis = redis
@@ -50,6 +52,7 @@ class AppState:
         self.ws_manager = ws_manager
         self.event_bus = event_bus
         self.feed_ws_manager = feed_ws_manager or FeedConnectionManager()
+        self.db_pool = db_pool
 
 
 def create_app(
@@ -58,6 +61,7 @@ def create_app(
     ws_manager: Optional[ConnectionManager] = None,
     event_bus: Optional[Any] = None,
     feed_ws_manager: Optional[FeedConnectionManager] = None,
+    db_pool: Optional[Any] = None,
 ) -> FastAPI:
     """Create and configure FastAPI application.
 
@@ -105,14 +109,17 @@ def create_app(
         ws_manager=ws_manager,
         event_bus=event_bus,
         feed_ws_manager=feed_ws_manager,
+        db_pool=db_pool,
     )
 
     # Import and register routers
     from backend.api.routes_world import router as world_router
     from backend.api.routes_evolution import router as evolution_router
+    from backend.api.routes_persistence import router as persistence_router
 
     app.include_router(world_router, prefix="/api", tags=["world"])
     app.include_router(evolution_router, prefix="/api", tags=["evolution"])
+    app.include_router(persistence_router, prefix="/api", tags=["persistence"])
 
     # Health check endpoint
     @app.get("/", tags=["health"])

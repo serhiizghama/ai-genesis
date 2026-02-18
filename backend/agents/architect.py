@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
+from backend.agents.entity_api import ENTITY_API_TEXT
 from backend.agents.llm_client import LLMClient
 from backend.bus.channels import Channels
 from backend.bus.events import EvolutionPlan, EvolutionTrigger, FeedMessage
@@ -210,7 +211,9 @@ Traits are Python classes that modify entity behavior. They can:
 - Improve resource gathering
 - Enable cooperation or competition
 
-Design creative, simple solutions that address the specific problem."""
+Design creative, simple solutions that address the specific problem.
+
+""" + ENTITY_API_TEXT
 
         # Create user prompt
         user_prompt = f"""Problem detected:
@@ -296,6 +299,7 @@ For most new traits use action_type "new_trait" and arch_target_class "Trait".""
             arch_target_class=arch_target_class,
             expected_outcome=expected_outcome,
             constraints=constraints,
+            world_context=trigger.world_context,
         )
 
         return plan
@@ -331,8 +335,25 @@ For most new traits use action_type "new_trait" and arch_target_class "Trait".""
                 "Manual evolution trigger activated. Design an innovative trait "
                 "to improve overall fitness and adaptability."
             )
+        elif trigger.problem_type == "periodic_improvement":
+            context_parts.append(
+                "Periodic evolution cycle. Design a creative new trait that improves "
+                "overall entity fitness, resource gathering efficiency, or survival capabilities. "
+                "Be inventive — try something not yet attempted."
+            )
 
         if trigger.suggested_area:
             context_parts.append(f"Suggested focus area: {trigger.suggested_area}")
+
+        if trigger.world_context:
+            wc = trigger.world_context
+            deaths = wc.get("death_stats", {})
+            death_str = ", ".join(f"{k}:{v}" for k, v in deaths.items()) if deaths else "none"
+            context_parts.append(
+                f"Current world state: {wc.get('entity_count')} entities, "
+                f"avg_energy={wc.get('avg_energy')}, "
+                f"resources={wc.get('resource_count')}, "
+                f"recent_deaths=[{death_str}]."
+            )
 
         return "\n".join(context_parts)

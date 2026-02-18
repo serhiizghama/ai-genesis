@@ -17,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import structlog
 
 from backend.core.entity import BaseEntity
+from backend.core.environment import Resource
 
 logger = structlog.get_logger()
 
@@ -163,36 +164,51 @@ class FeedConnectionManager:
             self.disconnect(connection)
 
 
-def build_world_frame(tick: int, entities: list[BaseEntity]) -> bytes:
+def build_world_frame(
+    tick: int,
+    entities: list[BaseEntity],
+    resources: list[Resource] | None = None,
+) -> bytes:
     """Build a binary world state frame using struct.pack.
 
     Binary protocol format:
-    - Header (6 bytes):
+    - Header (8 bytes):
         - Tick: uint32 (4 bytes)
         - EntityCount: uint16 (2 bytes)
-    - Body (20 bytes per entity):
+        - ResourceCount: uint16 (2 bytes)
+    - Body (21 bytes per entity):
         - ID: uint32 (4 bytes) - hash of string ID
         - X: float32 (4 bytes)
         - Y: float32 (4 bytes)
         - R: float32 (4 bytes) - radius
         - Color: uint32 (4 bytes) - hex color as integer
+        - Flags: uint8 (1 byte) - 0x01=isPredator, 0x02=isInfected
+    - Resources (8 bytes each):
+        - X: float32 (4 bytes)
+        - Y: float32 (4 bytes)
 
     Args:
         tick: Current simulation tick.
         entities: List of entities to include in the frame.
+        resources: List of food resources to include in the frame.
 
     Returns:
         Binary frame as bytes.
 
     Note:
-        For 500 entities: ~6 + 500*20 = 10,006 bytes (~10KB)
-        Compare to JSON: ~200KB for the same data.
+        For 2000 entities + 100 resources:
+        ~8 + 2000*21 + 100*8 = 43,008 bytes (~42KB)
+        Compare to JSON: ~800KB for the same data.
     """
-    entity_count = len(entities)
+    if resources is None:
+        resources = []
 
-    # Pack header: tick (I = uint32), entity_count (H = uint16)
+    entity_count = len(entities)
+    resource_count = len(resources)
+
+    # Pack header: tick (I = uint32), entity_count (H = uint16), resource_count (H = uint16)
     # Using big-endian (>) for network byte order
-    header = struct.pack(">IH", tick, entity_count)
+    header = struct.pack(">IHH", tick, entity_count, resource_count)
 
     # Pack entities
     entity_data_parts: list[bytes] = []
@@ -206,20 +222,34 @@ def build_world_frame(tick: int, entities: list[BaseEntity]) -> bytes:
         # Color format: "#RRGGBB" -> 0xRRGGBB
         color_int = int(entity.color.lstrip("#"), 16)
 
-        # Pack: ID (I), X (f), Y (f), R (f), Color (I)
-        # Format: >I f f f I = 4 + 4 + 4 + 4 + 4 = 20 bytes
+        # Build flags byte: 0x01=isPredator, 0x02=isInfected
+        flags = 0
+        if getattr(entity, "entity_type", "molbot") == "predator":
+            flags |= 0x01
+        if getattr(entity, "infected", False):
+            flags |= 0x02
+
+        # Pack: ID (I), X (f), Y (f), R (f), Color (I), Flags (B)
+        # Format: >I f f f I B = 4 + 4 + 4 + 4 + 4 + 1 = 21 bytes
         entity_bytes = struct.pack(
-            ">Ifffi",
+            ">IfffIB",
             entity_id_hash,
             entity.x,
             entity.y,
             entity.radius,
             color_int,
+            flags,
         )
         entity_data_parts.append(entity_bytes)
 
-    # Combine header and all entity data
-    frame = header + b"".join(entity_data_parts)
+    # Pack resources (x, y only — 8 bytes each)
+    resource_data_parts: list[bytes] = []
+    for resource in resources:
+        resource_bytes = struct.pack(">ff", resource.x, resource.y)
+        resource_data_parts.append(resource_bytes)
+
+    # Combine header, entity data, and resource data
+    frame = header + b"".join(entity_data_parts) + b"".join(resource_data_parts)
 
     return frame
 

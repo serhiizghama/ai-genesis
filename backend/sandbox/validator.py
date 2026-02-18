@@ -46,6 +46,12 @@ BANNED_CALLS = {
     "print",  # Prevent spam, use logger instead
 }
 
+# Whitelist of allowed attribute accesses on the 'entity' object
+ALLOWED_ENTITY_ATTRS = {
+    "id", "x", "y", "energy", "max_energy", "age",
+    "traits", "state", "eat_nearby", "move",
+}
+
 # Banned attribute accesses (dunders that could expose internals)
 BANNED_ATTRS = {
     "__subclasses__",
@@ -152,6 +158,36 @@ class CodeValidator:
             return ValidationResult(
                 is_valid=False,
                 error=ref_error,
+                code_hash=code_hash,
+            )
+
+        # Level 4.5: Unbound variable check in execute()
+        unbound_error = self._check_unbound_vars_in_execute(tree)
+        if unbound_error:
+            logger.warning("validation_failed_unbound_var", error=unbound_error)
+            return ValidationResult(
+                is_valid=False,
+                error=unbound_error,
+                code_hash=code_hash,
+            )
+
+        # Level 5a: Entity attribute whitelist
+        entity_attr_error = self._check_entity_attributes(tree)
+        if entity_attr_error:
+            logger.warning("validation_failed_entity_attr", error=entity_attr_error)
+            return ValidationResult(
+                is_valid=False,
+                error=entity_attr_error,
+                code_hash=code_hash,
+            )
+
+        # Level 5b: __init__ signature check (no required args beyond self)
+        init_sig_error = self._check_init_signature(tree)
+        if init_sig_error:
+            logger.warning("validation_failed_init_sig", error=init_sig_error)
+            return ValidationResult(
+                is_valid=False,
+                error=init_sig_error,
                 code_hash=code_hash,
             )
 
@@ -301,6 +337,161 @@ class CodeValidator:
                     return (
                         f"Used '{ref_name}.{node.attr}' but '{ref_name}' is not imported. "
                         f"Add 'import {ref_name}' at the top."
+                    )
+
+        return None
+
+    def _check_unbound_vars_in_execute(self, tree: ast.AST) -> Optional[str]:
+        """Detect variables used before guaranteed assignment in execute().
+
+        Catches the common LLM pattern:
+            if random.random() < 0.1:
+                dx = something      # only assigned here (90% chance it doesn't run)
+            entity.x += dx          # UnboundLocalError at runtime
+
+        Strategy:
+        - Collect names "definitely assigned" at the top level of execute() body
+          (unconditional assignments, for-loop targets, function arguments).
+        - Collect all names stored anywhere in the function.
+        - potentially_unbound = all_assigned - definitely_assigned
+        - Walk top-level statements (skipping if/for/while/try bodies) for Loads
+          of potentially_unbound names. A Load here means the variable is used
+          outside its conditional block → runtime error.
+
+        Args:
+            tree: AST of the source code
+
+        Returns:
+            Error message if potentially unbound variable found, None otherwise
+        """
+        for class_node in ast.walk(tree):
+            if not isinstance(class_node, ast.ClassDef):
+                continue
+            if not any(
+                isinstance(b, ast.Name) and b.id in ("BaseTrait", "Trait")
+                for b in class_node.bases
+            ):
+                continue
+
+            for method in class_node.body:
+                if not isinstance(method, ast.AsyncFunctionDef) or method.name != "execute":
+                    continue
+
+                # Names definitely assigned at the top level of execute()
+                definite: set[str] = {arg.arg for arg in method.args.args}
+                for stmt in method.body:
+                    if isinstance(stmt, ast.Assign):
+                        for target in stmt.targets:
+                            for n in ast.walk(target):
+                                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                                    definite.add(n.id)
+                    elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+                        definite.add(stmt.target.id)
+                    elif (
+                        isinstance(stmt, ast.AnnAssign)
+                        and stmt.value is not None
+                        and isinstance(stmt.target, ast.Name)
+                    ):
+                        definite.add(stmt.target.id)
+                    elif isinstance(stmt, ast.For):
+                        for n in ast.walk(stmt.target):
+                            if isinstance(n, ast.Name):
+                                definite.add(n.id)
+
+                # All names stored anywhere in the function
+                all_assigned: set[str] = set()
+                for n in ast.walk(method):
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                        all_assigned.add(n.id)
+
+                potentially_unbound = all_assigned - definite
+                if not potentially_unbound:
+                    continue
+
+                # Check top-level statements (skip conditional/loop bodies)
+                # for Loads of potentially_unbound names
+                _CONDITIONAL_STMTS = (
+                    ast.If, ast.For, ast.AsyncFor, ast.While,
+                    ast.Try, ast.With, ast.AsyncWith,
+                )
+                for stmt in method.body:
+                    if isinstance(stmt, _CONDITIONAL_STMTS):
+                        continue
+                    for n in ast.walk(stmt):
+                        if (
+                            isinstance(n, ast.Name)
+                            and isinstance(n.ctx, ast.Load)
+                            and n.id in potentially_unbound
+                        ):
+                            return (
+                                f"Potentially unbound variable '{n.id}' in execute(): "
+                                f"assigned only inside a conditional/loop block "
+                                f"but used unconditionally (UnboundLocalError risk)"
+                            )
+
+        return None
+
+    def _check_entity_attributes(self, tree: ast.AST) -> Optional[str]:
+        """Check that code only accesses whitelisted attributes on 'entity'.
+
+        Args:
+            tree: AST of the source code
+
+        Returns:
+            Error message if forbidden entity attribute found, None otherwise
+        """
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "entity"
+                and node.attr not in ALLOWED_ENTITY_ATTRS
+            ):
+                return f"Forbidden entity attribute: entity.{node.attr} (allowed: {', '.join(sorted(ALLOWED_ENTITY_ATTRS))})"
+
+        return None
+
+    def _check_init_signature(self, tree: ast.AST) -> Optional[str]:
+        """Check that Trait __init__ methods have no required parameters beyond self.
+
+        Traits are instantiated without arguments, so any required parameters
+        would cause an error at spawn time.
+
+        Args:
+            tree: AST of the source code
+
+        Returns:
+            Error message if __init__ has required args, None otherwise
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+
+            # Only check classes inheriting from BaseTrait or Trait
+            inherits_trait = any(
+                isinstance(base, ast.Name) and base.id in ("BaseTrait", "Trait")
+                for base in node.bases
+            )
+            if not inherits_trait:
+                continue
+
+            for item in node.body:
+                if not isinstance(item, ast.FunctionDef) or item.name != "__init__":
+                    continue
+
+                args = item.args
+                # n_required = total_args - 1 (self) - defaults
+                n_total = len(args.args)
+                n_defaults = len(args.defaults)
+                n_required = n_total - 1 - n_defaults
+
+                if n_required > 0:
+                    required_names = [
+                        a.arg for a in args.args[1 : n_total - n_defaults]
+                    ]
+                    return (
+                        f"Traits instantiated without args, __init__ requires: "
+                        f"{required_names}"
                     )
 
         return None

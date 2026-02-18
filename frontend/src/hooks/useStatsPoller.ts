@@ -19,6 +19,12 @@ export function useStatsPoller(): void {
           avgEnergy: data.avg_energy ?? 0,
           resourceCount: data.resource_count ?? 0,
           tps: data.tps ?? 0,
+          predatorKills: data.predator_kills ?? 0,
+          virusKills: data.virus_kills ?? 0,
+          predatorDeaths: data.predator_deaths ?? 0,
+          cycleStage: data.cycle_stage ?? 'idle',
+          cycleProblem: data.cycle_problem ?? '',
+          cycleSeverity: data.cycle_severity ?? '',
         });
       } catch {
         // ignore

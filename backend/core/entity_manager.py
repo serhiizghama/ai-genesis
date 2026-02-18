@@ -47,6 +47,8 @@ class EntityManager:
         generation: int = 0,
         tick: int = 0,
         initial_energy: float = 100.0,
+        entity_type: str = "molbot",
+        max_energy: float = 100.0,
     ) -> BaseEntity:
         """Spawn a new entity in the simulation.
 
@@ -58,6 +60,8 @@ class EntityManager:
             generation: Generation number (0 for first generation).
             tick: Current simulation tick (for born_at_tick).
             initial_energy: Starting energy level (default 100.0).
+            entity_type: Type of entity — "molbot" or "predator".
+            max_energy: Maximum energy cap (default 100.0).
 
         Returns:
             The newly created entity.
@@ -72,13 +76,17 @@ class EntityManager:
         # Generate random color based on DNA hash
         color = f"#{dna_hash[:6]}"
 
+        # Predators get a fixed red color, overriding DNA-based color
+        if entity_type == "predator":
+            color = "#cc0000"
+
         # Create entity
         entity = BaseEntity(
             id=entity_id,
             x=x,
             y=y,
             energy=initial_energy,
-            max_energy=100.0,
+            max_energy=max_energy,
             radius=10.0,
             color=color,
             age=0,
@@ -89,7 +97,11 @@ class EntityManager:
             traits=traits,
             state="alive",
             metabolism_rate=1.0,
+            entity_type=entity_type,
         )
+
+        # Inject back-reference so traits can call entity_manager methods
+        entity._entity_manager = self
 
         # Add to entities dict
         self._entities[entity_id] = entity
@@ -105,6 +117,7 @@ class EntityManager:
             generation=generation,
             parent_id=entity.parent_id,
             trait_count=len(traits),
+            entity_type=entity_type,
         )
 
         return entity
@@ -312,6 +325,41 @@ class EntityManager:
             List of all entities (alive and dead).
         """
         return list(self._entities.values())
+
+    def spawn_predator(self, x: float, y: float, tick: int = 0) -> "BaseEntity":
+        """Spawn a PredatorEntity with correct defaults and back-references.
+
+        Args:
+            x: Initial x position.
+            y: Initial y position.
+            tick: Current simulation tick (for born_at_tick).
+
+        Returns:
+            The newly created PredatorEntity.
+        """
+        from backend.core.predator import PredatorEntity
+        import uuid
+
+        entity = PredatorEntity(
+            id=str(uuid.uuid4()),
+            x=x,
+            y=y,
+            energy=200.0,
+            max_energy=200.0,
+            radius=15.0,
+            color="#cc0000",
+            generation=0,
+            dna_hash="predator",
+            parent_id=None,
+            born_at_tick=tick,
+            traits=[],
+            state="alive",
+        )
+        entity._entity_manager = self
+        self._entities[entity.id] = entity
+        self._add_to_spatial_grid(entity)
+        logger.info("predator_spawned", entity_id=entity.id, x=x, y=y)
+        return entity
 
     def clear(self) -> None:
         """Remove all entities from the simulation."""

@@ -16,13 +16,13 @@ import structlog
 
 from backend.bus.channels import Channels
 from backend.bus.event_bus import EventBus
-from backend.bus.events import FeedMessage, MutationApplied, MutationFailed, MutationReady
+from backend.bus.events import FeedMessage, MutationApplied, MutationFailed, MutationReady, MutationRollback
 from backend.core.dynamic_registry import DynamicRegistry
 from backend.core.traits import BaseTrait
 from backend.sandbox.validator import CodeValidator, ValidationResult
 
 if TYPE_CHECKING:
-    pass
+    import asyncpg
 
 logger = structlog.get_logger()
 
@@ -44,6 +44,7 @@ class RuntimePatcher:
         event_bus: EventBus,
         registry: DynamicRegistry,
         validator: CodeValidator,
+        db_pool: Optional[asyncpg.Pool] = None,
     ) -> None:
         """Initialize the runtime patcher.
 
@@ -51,10 +52,12 @@ class RuntimePatcher:
             event_bus: EventBus for listening to MutationReady events
             registry: DynamicRegistry for registering new trait classes
             validator: CodeValidator for double-checking mutations
+            db_pool: Optional asyncpg pool for persisting mutation status.
         """
         self._event_bus = event_bus
         self._registry = registry
         self._validator = validator
+        self._db_pool = db_pool
         self._registry_version = 0
 
     async def run(self) -> None:
@@ -65,6 +68,9 @@ class RuntimePatcher:
         """
         await self._event_bus.subscribe(Channels.MUTATION_READY, self._handle_mutation_ready)
         logger.info("runtime_patcher_listening", channel=Channels.MUTATION_READY)
+
+        await self._event_bus.subscribe(Channels.MUTATION_ROLLBACK, self._handle_rollback)
+        logger.info("runtime_patcher_listening", channel=Channels.MUTATION_ROLLBACK)
 
     async def _handle_mutation_ready(self, event_data: dict[str, object]) -> None:
         """Handle incoming MutationReady event.
@@ -182,6 +188,14 @@ class RuntimePatcher:
                 registry_version=self._registry_version,
             )
 
+            # Update mutation status in PostgreSQL
+            if self._db_pool is not None:
+                try:
+                    from backend.db.repository import update_mutation_status
+                    await update_mutation_status(self._db_pool, mutation_id, "applied")
+                except Exception as _pg_exc:
+                    logger.warning("patcher_pg_status_update_failed", mutation_id=mutation_id, error=str(_pg_exc))
+
             # Publish typed success event
             await self._event_bus.publish(
                 Channels.MUTATION_APPLIED,
@@ -223,6 +237,14 @@ class RuntimePatcher:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+            if self._db_pool is not None:
+                try:
+                    from backend.db.repository import update_mutation_status
+                    await update_mutation_status(
+                        self._db_pool, mutation_id, "failed", str(exc)
+                    )
+                except Exception as _pg_exc:
+                    logger.warning("patcher_pg_fail_update_failed", mutation_id=mutation_id, error=str(_pg_exc))
             await self._publish_failure(
                 mutation_id=mutation_id,
                 error=f"Registration exception: {exc}",
@@ -365,6 +387,61 @@ class RuntimePatcher:
             )
             # Return None - registry not updated (rollback)
             return None
+
+    async def _handle_rollback(self, event_data: dict[str, object]) -> None:
+        """Handle MutationRollback event by unregistering the trait and notifying the feed.
+
+        Args:
+            event_data: Deserialized MutationRollback event data
+        """
+        mutation_id = str(event_data.get("mutation_id", ""))
+        trait_name = str(event_data.get("trait_name", ""))
+        fitness_delta = float(event_data.get("fitness_delta", 0.0))
+
+        logger.warning(
+            "mutation_rollback_received",
+            mutation_id=mutation_id,
+            trait_name=trait_name,
+            fitness_delta=fitness_delta,
+        )
+
+        # Unregister trait from registry
+        removed = self._registry.unregister(trait_name)
+        if not removed:
+            logger.warning("rollback_trait_not_found", trait_name=trait_name)
+
+        # Update DB status to rolled_back
+        if self._db_pool is not None:
+            try:
+                from backend.db.repository import update_mutation_status
+                await update_mutation_status(self._db_pool, mutation_id, "rolled_back")
+            except Exception as exc:
+                logger.warning("rollback_pg_update_failed", mutation_id=mutation_id, error=str(exc))
+
+        # Publish FeedMessage about the rollback
+        pct = abs(round(fitness_delta * 100, 1))
+        # Fetch version from registry source (best-effort; use 0 if unavailable)
+        version = 0
+        await self._event_bus.publish(
+            Channels.FEED,
+            FeedMessage(
+                agent="patcher",
+                action="mutation_rolled_back",
+                message=f"🔄 Patcher: Откат мутации {trait_name} v{version} — популяция упала на {pct}%",
+                metadata={
+                    "mutation_id": mutation_id,
+                    "trait_name": trait_name,
+                    "fitness_delta_pct": -pct,
+                    "reason": "population_decline",
+                },
+            ),
+        )
+        logger.info(
+            "mutation_rollback_completed",
+            mutation_id=mutation_id,
+            trait_name=trait_name,
+            pct=pct,
+        )
 
     async def _publish_feed_failure(
         self,

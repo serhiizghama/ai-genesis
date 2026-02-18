@@ -17,7 +17,7 @@ from redis.asyncio import Redis
 
 from backend.bus.channels import Channels
 from backend.bus.event_bus import EventBus
-from backend.bus.events import EvolutionTrigger, FeedMessage
+from backend.bus.events import EvolutionTrigger, FeedMessage, MutationRollback
 from backend.config import Settings
 from backend.core.telemetry import WorldSnapshot
 
@@ -127,6 +127,9 @@ class WatcherAgent:
         self._last_trigger_time: Optional[float] = None
         self._running = False
         self._prev_snapshot: Optional[WorldSnapshot] = None
+        # Fitness tracking: mutation_id → {trait_name, baseline_count, window_starts_after}
+        self._pending_fitness: dict[str, dict] = {}
+        self._last_periodic_trigger_time: Optional[float] = None
 
     async def run(self) -> None:
         """Start the watcher agent loop.
@@ -141,10 +144,15 @@ class WatcherAgent:
         await self._bus.subscribe(Channels.TELEMETRY, self._handle_telemetry)
         logger.info("watcher_subscribed", channel=Channels.TELEMETRY)
 
+        # Subscribe to mutation applied for fitness tracking
+        await self._bus.subscribe(Channels.MUTATION_APPLIED, self._handle_mutation_applied)
+        logger.info("watcher_subscribed", channel=Channels.MUTATION_APPLIED)
+
         # Keep running (the event bus will handle incoming messages)
         try:
             while self._running:
                 await asyncio.sleep(1.0)
+                await self._maybe_periodic_trigger()
         except Exception as exc:
             logger.error("watcher_agent_error", error=str(exc))
             raise
@@ -173,6 +181,9 @@ class WatcherAgent:
                 logger.warning("snapshot_not_found", key=snapshot_key)
                 return
 
+            # Fitness check: evaluate pending mutations
+            await self._check_fitness(snapshot)
+
             # Detect anomalies
             anomalies = detect_anomalies(snapshot, self._settings)
 
@@ -196,6 +207,12 @@ class WatcherAgent:
                     # Publish evolution trigger (only the most severe one)
                     most_severe = self._get_most_severe(anomalies)
                     most_severe.cycle_id = cycle_id
+                    most_severe.world_context = {
+                        "entity_count": snapshot.entity_count,
+                        "avg_energy": round(snapshot.avg_energy, 1),
+                        "resource_count": snapshot.resource_count,
+                        "death_stats": snapshot.death_stats,
+                    }
                     await self._bus.publish(Channels.EVOLUTION_TRIGGER, most_severe)
                     self._last_trigger_time = time.time()
 
@@ -299,6 +316,137 @@ class WatcherAgent:
         )
 
         await self._bus.publish(Channels.FEED, feed_msg)
+
+    async def _handle_mutation_applied(self, data: dict[str, object]) -> None:
+        """Record baseline population count when a mutation is applied.
+
+        Args:
+            data: MutationApplied event data {mutation_id, trait_name, version, registry_version}
+        """
+        mutation_id = str(data.get("mutation_id", ""))
+        trait_name = str(data.get("trait_name", ""))
+
+        if self._prev_snapshot is None:
+            logger.debug("fitness_baseline_skipped_no_snapshot", mutation_id=mutation_id)
+            return
+
+        self._pending_fitness[mutation_id] = {
+            "trait_name": trait_name,
+            "baseline_count": self._prev_snapshot.entity_count,
+            "window_starts_after": self._prev_snapshot.tick,
+        }
+        logger.info(
+            "fitness_baseline_recorded",
+            mutation_id=mutation_id,
+            trait_name=trait_name,
+            baseline_count=self._prev_snapshot.entity_count,
+            window_starts_after=self._prev_snapshot.tick,
+        )
+
+    async def _check_fitness(self, snapshot: WorldSnapshot) -> None:
+        """Evaluate pending mutation fitness against current snapshot.
+
+        For each pending mutation whose observation window has passed,
+        compare current entity_count to baseline and roll back if population
+        dropped more than settings.fitness_rollback_threshold.
+
+        Args:
+            snapshot: Current world snapshot
+        """
+        threshold = self._settings.fitness_rollback_threshold
+        to_remove: list[str] = []
+
+        for mutation_id, entry in self._pending_fitness.items():
+            if snapshot.tick <= entry["window_starts_after"]:
+                continue  # Window hasn't passed yet
+
+            baseline: int = entry["baseline_count"]
+            trait_name: str = entry["trait_name"]
+            to_remove.append(mutation_id)
+
+            if baseline == 0:
+                continue  # Avoid division by zero
+
+            delta = (snapshot.entity_count - baseline) / baseline
+            logger.info(
+                "fitness_evaluated",
+                mutation_id=mutation_id,
+                trait_name=trait_name,
+                baseline=baseline,
+                current=snapshot.entity_count,
+                delta=round(delta, 3),
+            )
+
+            if delta < -threshold:
+                pct = abs(round(delta * 100, 1))
+                logger.warning(
+                    "fitness_rollback_triggered",
+                    mutation_id=mutation_id,
+                    trait_name=trait_name,
+                    fitness_delta=delta,
+                )
+                await self._bus.publish(
+                    Channels.MUTATION_ROLLBACK,
+                    MutationRollback(
+                        mutation_id=mutation_id,
+                        trait_name=trait_name,
+                        reason="population_decline",
+                        fitness_delta=delta,
+                    ),
+                )
+                logger.info(
+                    "mutation_rollback_published",
+                    mutation_id=mutation_id,
+                    trait_name=trait_name,
+                    pct=pct,
+                )
+
+        for mid in to_remove:
+            del self._pending_fitness[mid]
+
+    async def _maybe_periodic_trigger(self) -> None:
+        """Fire a periodic evolution trigger on a fixed interval, independent of anomalies.
+
+        Fires every settings.periodic_evolution_interval_sec regardless of anomaly cooldown.
+        Updates _last_trigger_time so anomaly detection won't double-fire right after.
+        """
+        interval = self._settings.periodic_evolution_interval_sec
+        now = time.time()
+
+        if (
+            self._last_periodic_trigger_time is not None
+            and (now - self._last_periodic_trigger_time) < interval
+        ):
+            return
+
+        self._last_periodic_trigger_time = now
+        self._last_trigger_time = now  # prevent anomaly from firing right after
+
+        cycle_id = f"evo_{uuid.uuid4().hex[:12]}"
+        trigger = EvolutionTrigger(
+            trigger_id=str(uuid.uuid4()),
+            problem_type="periodic_improvement",
+            severity="low",
+            suggested_area="traits",
+            cycle_id=cycle_id,
+            world_context={
+                "entity_count": self._prev_snapshot.entity_count,
+                "avg_energy": round(self._prev_snapshot.avg_energy, 1),
+                "resource_count": self._prev_snapshot.resource_count,
+                "death_stats": self._prev_snapshot.death_stats,
+            } if self._prev_snapshot is not None else {},
+        )
+        await self._bus.publish(Channels.EVOLUTION_TRIGGER, trigger)
+        await self._bus.publish(
+            Channels.FEED,
+            FeedMessage(
+                agent="watcher",
+                action="periodic_trigger",
+                message="🔁 Watcher: Периодическая эволюция — улучшаем популяцию...",
+                metadata={"cycle_id": cycle_id, "interval_sec": interval},
+            ),
+        )
+        logger.info("periodic_evolution_triggered", cycle_id=cycle_id, interval_sec=interval)
 
     def _can_trigger_evolution(self) -> bool:
         """Check if enough time has passed since last evolution trigger.

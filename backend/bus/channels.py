@@ -45,6 +45,10 @@ class Channels:
     # Payload: {reason: "manual_trigger"}
     EVOLUTION_FORCE = "ch:evolution:force"
 
+    # Watcher Agent → Runtime Patcher
+    # Payload: {mutation_id, trait_name, reason, fitness_delta}
+    MUTATION_ROLLBACK = "ch:mutation:rollback"
+
     # All Agents → WebSocket Handler
     # Payload: {agent, message, timestamp}
     FEED = "ch:feed"

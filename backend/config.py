@@ -14,14 +14,23 @@ class Settings(BaseSettings):
 
     # Core simulation parameters
     tick_rate_ms: int = 16
-    max_entities: int = 500
+    max_entities: int = 2000
     min_population: int = 20
     world_width: int = 2000
     world_height: int = 2000
     spawn_rate: float = 0.5  # Resources spawned per tick (multiplier)
 
+    # Predator & virus settings
+    predator_spawn_threshold: int = 1000
+    max_predators: int = 5
+    virus_spawn_threshold: int = 800
+    virus_duration_ticks: int = 3000
+
     # Redis connection
     redis_url: str = "redis://redis:6379/0"
+
+    # PostgreSQL connection (persistent state)
+    postgres_url: str = "postgresql://genesis:genesis@postgres:5432/genesis"
 
     # Ollama LLM service
     ollama_url: str = "http://ollama:11434"
@@ -48,6 +57,8 @@ class Settings(BaseSettings):
 
     # Evolution cycle
     evolution_cooldown_sec: int = 60
+    fitness_rollback_threshold: float = 0.20  # Roll back mutation if population drops >20%
+    periodic_evolution_interval_sec: int = 90  # Fire a periodic trigger every N seconds
 
     model_config = SettingsConfigDict(
         env_prefix="GENESIS_",

@@ -10,18 +10,9 @@ async function postParam(param: string, value: number): Promise<void> {
   })
 }
 
-async function triggerEvolution(): Promise<void> {
-  await fetch(`${API}/evolution/trigger`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ problem: 'manual_test', severity: 0.5 }),
-  })
-}
-
 export function WorldControls(): React.JSX.Element {
   const [timeScale, setTimeScale] = useState(1)
   const [spawnRate, setSpawnRate] = useState(0.5)
-  const [evolving, setEvolving] = useState(false)
 
   function handleTimeScale(value: number) {
     setTimeScale(value)
@@ -32,15 +23,6 @@ export function WorldControls(): React.JSX.Element {
   function handleSpawnRate(value: number) {
     setSpawnRate(value)
     postParam('spawn_rate', value)
-  }
-
-  async function handleForceEvolution() {
-    setEvolving(true)
-    try {
-      await triggerEvolution()
-    } finally {
-      setTimeout(() => setEvolving(false), 2000)
-    }
   }
 
   return (
@@ -54,7 +36,7 @@ export function WorldControls(): React.JSX.Element {
           <input
             type="range"
             min={1}
-            max={10}
+            max={30}
             step={1}
             value={timeScale}
             onChange={(e) => handleTimeScale(Number(e.target.value))}
@@ -71,8 +53,8 @@ export function WorldControls(): React.JSX.Element {
           <input
             type="range"
             min={0.0}
-            max={5.0}
-            step={0.1}
+            max={30}
+            step={0.5}
             value={spawnRate}
             onChange={(e) => handleSpawnRate(Number(e.target.value))}
             className="world-controls__slider"
@@ -80,15 +62,6 @@ export function WorldControls(): React.JSX.Element {
           <span className="world-controls__value">{spawnRate.toFixed(1)}x</span>
         </div>
       </div>
-
-      {/* Force Evolution Button */}
-      <button
-        onClick={handleForceEvolution}
-        disabled={evolving}
-        className="world-controls__btn"
-      >
-        {evolving ? '⏳ Triggering...' : '🧬 Force Evolution'}
-      </button>
     </div>
   )
 }

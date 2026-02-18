@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Eye, Brain, Code2, Wand2 } from 'lucide-react';
 import { useWorldStore } from '../store/worldStore';
 import type { FeedMessage } from '../types/feed';
@@ -54,6 +54,15 @@ const SEVERITY_CHIP_COLOR: Record<string, string> = {
 function formatTime(timestamp: number): string {
   const d = new Date(timestamp * 1000);
   return d.toLocaleTimeString('en-US', { hour12: false });
+}
+
+/** Format elapsed seconds → "4s", "1m 23s", "10m" */
+function formatElapsed(seconds: number): string {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
 interface FeedItemProps {
@@ -143,24 +152,85 @@ function FeedItem({ msg, isSelected, onClick }: FeedItemProps): React.JSX.Elemen
 
 interface CycleDividerProps {
   readonly cycleId: string;
+  /** Seconds between previous cycle start and this cycle start. Null for the first cycle. */
+  readonly intervalSec: number | null;
+  /** Duration of this cycle in seconds. Null = still running (shows live timer). */
+  readonly durationSec: number | null;
+  /** Unix timestamp when this cycle started (for live timer). */
+  readonly startedAt: number;
+  /** Current wall-clock time for live timer (updated every second). */
+  readonly now: number;
 }
 
-function CycleDivider({ cycleId }: CycleDividerProps): React.JSX.Element {
+function CycleDivider({ cycleId, intervalSec, durationSec, startedAt, now }: CycleDividerProps): React.JSX.Element {
+  const isActive = durationSec === null;
+  const liveSec = isActive ? now - startedAt : durationSec;
+
   return (
     <div
       style={{
         display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        margin: '8px 0 4px',
+        flexDirection: 'column',
+        gap: '2px',
+        margin: '10px 0 6px',
         padding: '0 2px',
       }}
     >
-      <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-      <span style={{ fontSize: '8px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', letterSpacing: '0.5px' }}>
-        {cycleId}
-      </span>
-      <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+      {/* interval since last cycle */}
+      {intervalSec !== null && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', marginBottom: '2px' }}>
+          <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.2)', fontFamily: 'var(--font-mono)' }}>
+            ↕ {formatElapsed(intervalSec)} since last cycle
+          </span>
+        </div>
+      )}
+
+      {/* cycle id row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+        <span style={{
+          fontSize: '8px',
+          color: 'var(--text-secondary)',
+          fontFamily: 'var(--font-mono)',
+          whiteSpace: 'nowrap',
+          letterSpacing: '0.5px',
+        }}>
+          {cycleId}
+        </span>
+        <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+      </div>
+
+      {/* cycle duration / live timer */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+        {isActive ? (
+          <span style={{
+            fontSize: '9px',
+            fontFamily: 'var(--font-mono)',
+            color: '#4dff91',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '3px',
+          }}>
+            <span style={{
+              display: 'inline-block',
+              width: '5px',
+              height: '5px',
+              borderRadius: '50%',
+              background: '#4dff91',
+              animation: 'pulse 1s infinite',
+            }} />
+            {formatElapsed(liveSec)} running
+          </span>
+        ) : (
+          <span style={{
+            fontSize: '9px',
+            fontFamily: 'var(--font-mono)',
+            color: 'rgba(255,255,255,0.3)',
+          }}>
+            ⏱ {formatElapsed(liveSec)}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -173,14 +243,21 @@ interface EvolutionFeedProps {
 /**
  * EvolutionFeed — semi-transparent overlay showing real-time agent messages.
  *
- * Positioned on the right side of the screen.
- * Color-coded by agent: Watcher=red, Architect=blue, Coder=green, Patcher=purple.
- * Auto-scrolls to the latest message.
- * Click a message to open DeveloperPanel.
+ * Shows cycle dividers with:
+ * - ↕ interval between cycles
+ * - ⏱ duration of completed cycles
+ * - live green timer for the active cycle
  */
 export function EvolutionFeed({ selectedId, onSelect }: EvolutionFeedProps): React.JSX.Element {
   const feedMessages = useWorldStore((s) => s.feedMessages);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+
+  // Tick every second for the live timer
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -190,16 +267,66 @@ export function EvolutionFeed({ selectedId, onSelect }: EvolutionFeedProps): Rea
     onSelect(selectedId === msg.id ? null : msg);
   };
 
-  // Group messages by cycle_id, track the last seen cycle_id to show dividers
+  // Build cycle metadata: for each cycle_id, track firstTimestamp and lastTimestamp
+  const cycleInfo = new Map<string, { firstTs: number; lastTs: number }>();
+  const cycleOrder: string[] = [];
+
+  for (const msg of feedMessages) {
+    const cid = msg.metadata?.cycle_id;
+    if (!cid) continue;
+    if (!cycleInfo.has(cid)) {
+      cycleInfo.set(cid, { firstTs: msg.timestamp, lastTs: msg.timestamp });
+      cycleOrder.push(cid);
+    } else {
+      const info = cycleInfo.get(cid)!;
+      if (msg.timestamp > info.lastTs) info.lastTs = msg.timestamp;
+    }
+  }
+
+  // The last cycle in the list is "active" (still receiving messages)
+  const activeCycleId = cycleOrder[cycleOrder.length - 1];
+
+  // Render
   const rendered: React.ReactNode[] = [];
   let lastCycleId: string | undefined;
 
   feedMessages.forEach((msg) => {
     const cycleId = msg.metadata?.cycle_id;
     if (cycleId && cycleId !== lastCycleId) {
-      rendered.push(<CycleDivider key={`div-${cycleId}`} cycleId={cycleId} />);
+      const idx = cycleOrder.indexOf(cycleId);
+      const prevCycleId = idx > 0 ? cycleOrder[idx - 1] : null;
+
+      const startedAt = cycleInfo.get(cycleId)?.firstTs ?? msg.timestamp;
+      const isActive = cycleId === activeCycleId;
+
+      // interval = gap between this cycle's start and previous cycle's start
+      const intervalSec = prevCycleId
+        ? startedAt - (cycleInfo.get(prevCycleId)?.firstTs ?? startedAt)
+        : null;
+
+      // duration = last message in cycle - first message in cycle (null if active)
+      const info = cycleInfo.get(cycleId);
+      const durationSec = isActive
+        ? null
+        : info
+          ? info.lastTs - info.firstTs
+          : null;
+
+      rendered.push(
+        <CycleDivider
+          key={`div-${cycleId}`}
+          cycleId={cycleId}
+          intervalSec={intervalSec}
+          durationSec={durationSec}
+          startedAt={startedAt}
+          now={now}
+        />
+      );
+
       lastCycleId = cycleId;
+      void idx; // used for ordering only
     }
+
     rendered.push(
       <FeedItem
         key={msg.id}
@@ -212,6 +339,12 @@ export function EvolutionFeed({ selectedId, onSelect }: EvolutionFeedProps): Rea
 
   return (
     <div className="evolution-feed">
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
       <div className="evolution-feed__header-row">Evolution Feed</div>
       <div className="evolution-feed__scroll">
         {feedMessages.length === 0 ? (

@@ -33,6 +33,9 @@ from backend.core.engine import CoreEngine
 from backend.core.entity_manager import EntityManager
 from backend.core.environment import Environment
 from backend.core.world_physics import WorldPhysics
+from backend.db.connection import init_db
+from backend.db.repository import save_feed_message
+from backend.db.restore import restore_from_checkpoint
 from backend.sandbox import CodeValidator, RuntimePatcher
 from backend.sandbox.mutations_registry import MutationRegistry
 
@@ -64,6 +67,7 @@ class SimulationRunner:
         self.patcher: Optional[RuntimePatcher] = None
         self.uvicorn_server: Optional[uvicorn.Server] = None
         self.shutdown_event = asyncio.Event()
+        self.db_pool = None
 
     async def run(self) -> None:
         """Initialize and run the simulation with FastAPI server.
@@ -101,6 +105,19 @@ class SimulationRunner:
             # For MVP, we can run without Redis
             # Event bus will be needed in Phase 2
             redis = None  # type: ignore
+
+        # Initialize PostgreSQL
+        try:
+            self.db_pool = await init_db(settings.postgres_url)
+            logger.info("postgres_connected", url=settings.postgres_url)
+        except Exception as exc:
+            logger.warning(
+                "postgres_connection_failed",
+                url=settings.postgres_url,
+                error=str(exc),
+                fallback="continuing_without_postgres",
+            )
+            self.db_pool = None
 
         # Initialize EventBus (T-039)
         event_bus = EventBus(redis)  # type: ignore
@@ -149,6 +166,7 @@ class SimulationRunner:
             redis=redis,  # type: ignore
             settings=settings,
             ws_manager=ws_manager,
+            db_pool=self.db_pool,
         )
         logger.info("core_engine_initialized")
 
@@ -191,6 +209,7 @@ class SimulationRunner:
             validator=validator,
             settings=settings,
             mutation_registry=mutation_registry,
+            db_pool=self.db_pool,
         )
         logger.info("coder_agent_initialized")
 
@@ -203,18 +222,45 @@ class SimulationRunner:
                 "metadata": event.metadata,
                 "timestamp": event.timestamp,
             })
+            # Persist feed message to PostgreSQL
+            if self.db_pool is not None:
+                try:
+                    cycle_id = None
+                    if isinstance(event.metadata, dict):
+                        cycle_id = event.metadata.get("cycle_id")
+                    await save_feed_message(
+                        self.db_pool,
+                        agent=event.agent,
+                        action=event.action,
+                        message=event.message,
+                        metadata=event.metadata,
+                        cycle_id=cycle_id,
+                    )
+                except Exception as _exc:
+                    logger.warning("feed_db_save_failed", error=str(_exc))
 
         await event_bus.subscribe(Channels.FEED, _on_feed_event, FeedEvent)
         logger.info("feed_channel_subscribed")
 
         # Create RuntimePatcher (T-047)
-
         self.patcher = RuntimePatcher(
             event_bus=event_bus,
             registry=registry,
             validator=validator,
+            db_pool=self.db_pool,
         )
         logger.info("runtime_patcher_initialized")
+
+        # Restore simulation state from last checkpoint (if any)
+        if self.db_pool is not None:
+            try:
+                restored = await restore_from_checkpoint(self.db_pool, self.engine, registry)
+                if restored:
+                    logger.info("simulation_restored_from_checkpoint")
+                else:
+                    logger.info("simulation_starting_fresh")
+            except Exception as exc:
+                logger.warning("restore_failed", error=str(exc), fallback="fresh_start")
 
         # Create FastAPI app (T-023 integration)
         app = create_app(
@@ -223,6 +269,7 @@ class SimulationRunner:
             ws_manager=ws_manager,
             event_bus=event_bus,
             feed_ws_manager=feed_ws_manager,
+            db_pool=self.db_pool,
         )
         logger.info("fastapi_app_created")
 

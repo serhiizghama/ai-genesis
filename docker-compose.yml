@@ -41,8 +41,11 @@ services:
       - GENESIS_OLLAMA_URL=http://ollama:11434
       - GENESIS_OLLAMA_MODEL=qwen2.5:3b
       - GENESIS_LLM_TIMEOUT_SEC=300
+      - GENESIS_POSTGRES_URL=postgresql://genesis:genesis@postgres:5432/genesis
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       ollama:
         condition: service_healthy
@@ -63,6 +66,32 @@ services:
     restart: unless-stopped
     networks:
       - genesis-network
+
+  # ============================================
+  # POSTGRESQL (Persistent State Storage)
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: genesis
+      POSTGRES_USER: genesis
+      POSTGRES_PASSWORD: genesis
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U genesis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - genesis-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
 
   # ============================================
   # REDIS (State Storage + Pub/Sub)
@@ -128,6 +157,8 @@ volumes:
   redis_data:
     driver: local
   ollama_models:
+    driver: local
+  pgdata:
     driver: local
 
 # ============================================

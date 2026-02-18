@@ -13,12 +13,14 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
+from backend.agents.entity_api import ENTITY_API_TEXT
 from backend.agents.llm_client import LLMClient, extract_code_block
 from backend.bus.channels import Channels
 from backend.bus.events import EvolutionPlan, FeedMessage, MutationReady
 from backend.sandbox.mutations_registry import MutationRegistry
 
 if TYPE_CHECKING:
+    import asyncpg
     from backend.bus.event_bus import EventBus
     from backend.config import Settings
     from backend.sandbox.validator import CodeValidator
@@ -63,6 +65,7 @@ class CoderAgent:
         validator: CodeValidator,
         settings: Settings,
         mutation_registry: Optional[MutationRegistry] = None,
+        db_pool: Optional[asyncpg.Pool] = None,
     ) -> None:
         """Initialize the Coder Agent.
 
@@ -78,6 +81,7 @@ class CoderAgent:
         self.validator = validator
         self.settings = settings
         self.mutation_registry = mutation_registry
+        self.db_pool = db_pool
         self.mutation_counter = 0
 
     async def run(self) -> None:
@@ -194,7 +198,9 @@ class CoderAgent:
         trait_name = plan.target_class or "adaptive_behavior"
 
         # Generate code
-        code = await self._generate_code(trait_name, plan.description)
+        code = await self._generate_code(
+            trait_name, plan.description, world_context=plan.world_context
+        )
 
         if code is None:
             return None
@@ -211,7 +217,10 @@ class CoderAgent:
 
             # Retry once with the validation error included in the prompt
             code = await self._generate_code(
-                trait_name, plan.description, previous_error=validation_result.error
+                trait_name,
+                plan.description,
+                previous_error=validation_result.error,
+                world_context=plan.world_context,
             )
 
             if code is None:
@@ -296,6 +305,23 @@ class CoderAgent:
                 source_code=code,
             )
 
+        # Persist to PostgreSQL
+        if self.db_pool is not None:
+            try:
+                from backend.db.repository import save_mutation
+                await save_mutation(self.db_pool, {
+                    "mutation_id": mutation.mutation_id,
+                    "trait_name": mutation.trait_name,
+                    "version": version,
+                    "code_hash": mutation.code_hash,
+                    "source_code": code,
+                    "cycle_id": plan.cycle_id,
+                    "trigger_type": plan.action_type,
+                    "status": "pending",
+                })
+            except Exception as exc:
+                logger.warning("coder_pg_save_failed", mutation_id=mutation.mutation_id, error=str(exc))
+
         return mutation
 
     async def _generate_code(
@@ -303,6 +329,7 @@ class CoderAgent:
         trait_name: str,
         description: str,
         previous_error: str | None = None,
+        world_context: dict | None = None,
     ) -> str | None:
         """Generate Python code for the trait.
 
@@ -310,6 +337,7 @@ class CoderAgent:
             trait_name: Name of the trait to generate.
             description: Description of what the trait should do.
             previous_error: Validation error from a previous attempt, if retrying.
+            world_context: Current world state to guide code generation.
 
         Returns:
             Generated Python code or None if LLM fails.
@@ -328,20 +356,7 @@ CRITICAL RULES:
 7. Keep code simple and efficient (runs every tick)
 8. Code must complete in under 5ms
 
-The entity parameter has these attributes:
-- id: str
-- x, y: float (position)
-- energy: float (current energy, modify directly)
-- max_energy: float
-- age: int (in ticks)
-- traits: list (other traits)
-- state: str ("alive", "dead", or "reproducing")
-
-Entity methods:
-- move(dx, dy): move entity by delta
-- consume_resource(amount): gain energy (capped at max_energy)
-
-IMPORTANT: entity does NOT have a .world attribute. Do NOT call entity.world.create_entity() or any world methods."""
+""" + ENTITY_API_TEXT
 
         # Prefix the prompt with the previous error if this is a retry
         retry_prefix = ""
@@ -351,8 +366,19 @@ IMPORTANT: entity does NOT have a .world attribute. Do NOT call entity.world.cre
                 "Fix the issue and try again. Do NOT use forbidden imports (e.g. os, sys, subprocess).\n\n"
             )
 
+        # Prepend world context if available
+        world_prefix = ""
+        if world_context:
+            wc = world_context
+            world_prefix = (
+                f"World context: {wc.get('entity_count')} entities alive, "
+                f"avg_energy={wc.get('avg_energy')}, "
+                f"resources={wc.get('resource_count')} available.\n"
+                f"Design the trait to be effective under these conditions.\n\n"
+            )
+
         # Create user prompt
-        user_prompt = retry_prefix + f"""Create a Python trait class named '{trait_name}' that implements this behavior:
+        user_prompt = world_prefix + retry_prefix + f"""Create a Python trait class named '{trait_name}' that implements this behavior:
 
 {description}
 
@@ -364,6 +390,7 @@ Requirements:
 - NEVER use @dataclasses.dataclass — plain class only
 - entity.state is a str ("alive"/"dead"), NOT a dict
 - Do NOT use entity.world or create new entities
+- Do NOT modify entity.energy to add energy — use eat_nearby() only
 
 Example structure:
 ```python
@@ -381,7 +408,8 @@ class {trait_name}(BaseTrait):
 
     async def execute(self, entity) -> None:
         # entity has: id, x, y, energy, max_energy, age, traits, state (str)
-        # entity methods: move(dx, dy), consume_resource(amount)
+        # To gain energy: entity.eat_nearby(radius=50.0) -> bool
+        # To move: entity.move(dx, dy)
         pass
 ```
 

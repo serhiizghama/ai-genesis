@@ -24,11 +24,15 @@ function Header(): React.JSX.Element {
     <header className="header">
       <span className="header__title">AI-GENESIS</span>
       <div className="header__stats">
-        <Metric label="TICK" value={tick.toLocaleString()} />
-        <Metric label="ENTITIES" value={String(entityCount)} />
-        <Metric label="AVG ENERGY" value={`${stats.avgEnergy.toFixed(0)}%`} color={energyColor} />
-        <Metric label="RESOURCES" value={String(stats.resourceCount)} />
-        <Metric label="TPS" value={stats.tps.toFixed(0)} dim />
+        <Metric label="TICK" value={tick.toLocaleString()} tooltip="Total simulation steps executed since the world started" />
+        <Metric label="ENTITIES" value={String(entityCount)} tooltip="Number of active molbots currently alive in the world" />
+        <Metric label="AVG ENERGY" value={`${stats.avgEnergy.toFixed(0)}%`} color={energyColor} tooltip="Average energy level across all living entities. Below 30% signals critical stress" />
+        <Metric label="RESOURCES" value={String(stats.resourceCount)} tooltip="Total resource units available in the world for entities to consume" />
+        <Metric label="TPS" value={stats.tps.toFixed(0)} dim tooltip="Ticks per second — current simulation speed. Low values indicate server load" />
+        <CycleIndicator stage={stats.cycleStage} problem={stats.cycleProblem} />
+        <Metric label="🔴 KILLED" value={stats.predatorKills.toLocaleString()} color="#ff6b6b" tooltip="Molbots killed by predators (cumulative)" />
+        <Metric label="🦠 VIRUS" value={stats.virusKills.toLocaleString()} color="#b44dff" tooltip="Molbots killed by virus (cumulative)" />
+        <Metric label="☠ PRED ☠" value={stats.predatorDeaths.toLocaleString()} color="#4daaff" tooltip="Predators that died — from old age, starvation, or molbot attacks" />
       </div>
       <div
         className={`header__connection ${
@@ -41,15 +45,16 @@ function Header(): React.JSX.Element {
 }
 
 function Metric({
-  label, value, color, dim,
+  label, value, color, dim, tooltip,
 }: {
   label: string
   value: string
   color?: string
   dim?: boolean
+  tooltip?: string
 }): React.JSX.Element {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+    <div className="metric-wrapper">
       <span style={{
         fontSize: 9,
         letterSpacing: '0.08em',
@@ -65,6 +70,48 @@ function Metric({
       }}>
         {value}
       </span>
+      {tooltip && <span className="metric-tooltip">{tooltip}</span>}
+    </div>
+  )
+}
+
+const CYCLE_COLORS: Record<string, string> = {
+  idle:     'rgba(255,255,255,0.2)',
+  planning: '#ffd04d',
+  coding:   '#4daaff',
+  patching: '#b44dff',
+  done:     '#4dff91',
+  failed:   '#ff4d4d',
+}
+
+function CycleIndicator({ stage, problem }: { stage: string; problem: string }): React.JSX.Element {
+  const color = CYCLE_COLORS[stage] ?? 'rgba(255,255,255,0.2)'
+  const label = stage === 'idle'
+    ? 'IDLE'
+    : problem
+      ? `${stage.toUpperCase()} · ${problem.replace('_', ' ')}`
+      : stage.toUpperCase()
+
+  const tooltip = ({
+    idle:     'No active evolution cycle — waiting for anomaly',
+    planning: 'Architect is designing an evolution plan (LLM call)',
+    coding:   'Coder is writing trait code (LLM call)',
+    patching: 'Patcher is hot-loading new code into the simulation',
+    done:     'Evolution cycle completed successfully',
+    failed:   'Evolution cycle failed — check feed for details',
+  } as Record<string, string>)[stage] ?? ''
+
+  return (
+    <div className="metric-wrapper">
+      <span style={{ fontSize: 9, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase' }}>
+        EVO CYCLE
+      </span>
+      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color, display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0,
+                       boxShadow: stage !== 'idle' ? `0 0 6px ${color}` : 'none' }} />
+        {label}
+      </span>
+      {tooltip && <span className="metric-tooltip">{tooltip}</span>}
     </div>
   )
 }

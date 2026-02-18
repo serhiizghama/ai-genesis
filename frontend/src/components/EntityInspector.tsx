@@ -6,6 +6,7 @@ const API = '/api'
 interface EntityDetail {
   numeric_id: number
   string_id: string
+  entity_type: string
   generation: number
   age: number
   energy: number
@@ -15,6 +16,10 @@ interface EntityDetail {
   traits: string[]
   deactivated_traits: string[]
   evolution_count: number
+  infected: boolean
+  infection_timer: number
+  metabolism_rate: number
+  parent_id: string | null
 }
 
 export function EntityInspector(): React.JSX.Element {
@@ -78,7 +83,7 @@ export function EntityInspector(): React.JSX.Element {
   if (selectedEntityId === null) {
     return (
       <div className="entity-inspector">
-        <div className="entity-inspector__empty">Click a Molbot to inspect</div>
+        <div className="entity-inspector__empty">Click an entity to inspect</div>
       </div>
     )
   }
@@ -104,6 +109,28 @@ export function EntityInspector(): React.JSX.Element {
           {!loading && detail && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
 
+              {/* Type badge */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={labelStyle}>Type</span>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 'bold',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: detail.entity_type === 'predator'
+                    ? 'rgba(204,0,0,0.2)'
+                    : 'rgba(77,255,145,0.12)',
+                  color: detail.entity_type === 'predator'
+                    ? '#ff6b6b'
+                    : '#4dff91',
+                  border: `1px solid ${detail.entity_type === 'predator' ? 'rgba(255,100,100,0.3)' : 'rgba(77,255,145,0.25)'}`,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}>
+                  {detail.entity_type === 'predator' ? '⚔ Predator' : '◉ Molbot'}
+                </span>
+              </div>
+
               <Row label="ID" value={`#${detail.numeric_id}`} />
               <Row label="Gen" value={`G${detail.generation}`} />
               <Row label="Age" value={`${detail.age} ticks`} />
@@ -119,6 +146,46 @@ export function EntityInspector(): React.JSX.Element {
                   {detail.evolution_count > 0 ? `⚡ ×${detail.evolution_count}` : '—'}
                 </span>
               </div>
+
+              {/* Infection status */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={labelStyle}>Virus</span>
+                {detail.infected ? (
+                  <span style={{
+                    fontSize: 11,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    background: 'rgba(153,50,204,0.2)',
+                    color: '#c87eff',
+                    border: '1px solid rgba(153,50,204,0.4)',
+                  }}>
+                    ☣ Infected ({detail.infection_timer} ticks)
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)' }}>—</span>
+                )}
+              </div>
+
+              {/* Metabolism */}
+              <Row label="Metabolism" value={`${detail.metabolism_rate}×`} />
+
+              {/* Parent */}
+              {detail.parent_id && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={labelStyle}>Parent</span>
+                  <span style={{
+                    fontSize: 10,
+                    color: 'rgba(255,255,255,0.35)',
+                    fontFamily: 'monospace',
+                    maxWidth: 140,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {detail.parent_id.slice(0, 8)}…
+                  </span>
+                </div>
+              )}
 
               {/* Energy */}
               <div>

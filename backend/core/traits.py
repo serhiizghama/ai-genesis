@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 import structlog
 
@@ -39,15 +39,23 @@ class TraitExecutor:
     the simulation loop.
     """
 
-    def __init__(self, timeout_sec: float, tick_budget_sec: float) -> None:
+    def __init__(
+        self,
+        timeout_sec: float,
+        tick_budget_sec: float,
+        on_trait_error: Optional[Callable[[str, str, str], None]] = None,
+    ) -> None:
         """Initialize the trait executor.
 
         Args:
             timeout_sec: Hard timeout per trait execution (e.g., 0.005 = 5ms).
             tick_budget_sec: Total time budget for all trait executions in a tick (e.g., 0.014 = 14ms).
+            on_trait_error: Optional callback(entity_id, trait_name, error_str) called on first
+                            error per trait_name. Used by the engine to publish errors to the feed.
         """
         self.timeout_sec = timeout_sec
         self.tick_budget_sec = tick_budget_sec
+        self.on_trait_error = on_trait_error
 
     async def execute_trait(
         self,
@@ -85,13 +93,16 @@ class TraitExecutor:
             return False
 
         except Exception as exc:
+            error_str = str(exc)
             logger.error(
                 "trait_error",
                 trait=trait_name,
                 entity_id=entity.id,
-                error=str(exc),
+                error=error_str,
                 error_type=type(exc).__name__,
             )
+            if self.on_trait_error is not None:
+                self.on_trait_error(entity.id, trait_name, error_str)
             return False
 
     async def execute_traits(
