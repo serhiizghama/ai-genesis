@@ -80,6 +80,9 @@ class EntityManager:
         if entity_type == "predator":
             color = "#cc0000"
 
+        # Molbots have a natural lifespan; predators use their own max_age
+        molbot_max_age = 5000  # ticks (~6 min at 13 TPS); 0 = immortal for predators
+
         # Create entity
         entity = BaseEntity(
             id=entity_id,
@@ -90,13 +93,14 @@ class EntityManager:
             radius=10.0,
             color=color,
             age=0,
+            max_age=molbot_max_age if entity_type == "molbot" else 0,
             generation=generation,
             dna_hash=dna_hash,
             parent_id=parent.id if parent else None,
             born_at_tick=tick,
             traits=traits,
             state="alive",
-            metabolism_rate=1.0,
+            metabolism_rate=2.0,
             entity_type=entity_type,
         )
 

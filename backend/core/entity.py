@@ -59,6 +59,10 @@ class BaseEntity:
     _entity_manager: Optional["EntityManager"] = field(
         default=None, init=False, repr=False, compare=False, hash=False
     )
+    # Tracks energy gained via eat_nearby() during trait execution (for trait sandboxing)
+    _trait_energy_gain: float = field(
+        default=0.0, init=False, repr=False, compare=False, hash=False
+    )
 
     async def update(self, trait_executor: TraitExecutor) -> None:
         """Update entity state and execute all active traits.
@@ -86,8 +90,20 @@ class BaseEntity:
         if self.infected:
             self.energy -= 2.0
 
-        # Execute all traits
+        # Execute all traits inside a sandbox:
+        # - age is saved/restored so traits cannot corrupt it
+        # - energy is saved; only gains from eat_nearby() (via _receive_energy) are kept
+        # - metabolism_rate is saved/restored so traits cannot reduce it
+        _age_snapshot = self.age
+        _energy_snapshot = self.energy
+        _metabolism_snapshot = self.metabolism_rate
+        self._trait_energy_gain = 0.0
+
         await trait_executor.execute_traits(self)
+
+        self.age = _age_snapshot
+        self.energy = min(_energy_snapshot + self._trait_energy_gain, self.max_energy)
+        self.metabolism_rate = _metabolism_snapshot
 
         # Check for death
         if self.energy <= 0:
@@ -124,7 +140,10 @@ class BaseEntity:
 
         Called only by Environment.consume_resource(). Traits must use
         eat_nearby() instead — this method does NOT check for real resources.
+        Gains are tracked via _trait_energy_gain so the trait sandbox in
+        update() can apply only legitimate energy gains.
         """
+        self._trait_energy_gain += amount
         self.energy = min(self.energy + amount, self.max_energy)
 
     def eat_nearby(self, radius: float = 30.0) -> bool:
